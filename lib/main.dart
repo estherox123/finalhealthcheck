@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:health/health.dart';
 import 'health_controller.dart';
+import 'package:intl/intl.dart'; // For date formatting
+import 'package:fl_chart/fl_chart.dart'; // Example charting library
 
 void main() => runApp(const MyApp());
 
@@ -257,73 +259,339 @@ class StepsPage extends _HealthStatefulPage {
 }
 
 class _StepsPageState extends _HealthState<StepsPage> {
-  int totalSteps7d = 0;
+  Map<String, int> dailySteps = {};
+  bool isLoadingData = false;
+  int todaysSteps = 0;
+
+  List<BarChartGroupData> barGroups = [];
+  List<String> dateLabelsForChart = [];
 
   @override
   List<HealthDataType> get types => const [HealthDataType.STEPS];
 
-  Future<void> _load() async {
-    final has = await HealthController.I.hasPermsFor(const [HealthDataType.STEPS]);
-    debugPrint('HAS READ_STEPS? $has');
+  @override
+  String get pageSpecificFeatureName => "daily step count tracking";
 
-    final now = DateTime.now();
-    final start = now.subtract(const Duration(days: 7));
-
-    int total = 0;
-
-    // 1) ✅ 집계 API (소스에 따라 이게 잘 동작)
-    final agg = await HealthController.I.health.getTotalStepsInInterval(start, now);
-    if (agg != null) {
-      total = agg;
-    } else {
-      // 2) 폴백: 포인트를 직접 합산
-      final points = await health.getHealthDataFromTypes(
-        types: const [HealthDataType.STEPS],
-        startTime: start,
-        endTime: now,
-      );
-      for (final p in points) {
-        final v = (p.value is num) ? (p.value as num).toDouble() : 0.0;
-        total += v.round();
+  @override
+  void initState() {
+    super.initState();
+    // This function will be called once when the widget is inserted into the tree.
+    // We use addPostFrameCallback to ensure that the first frame is built
+    // and any initial state from the base class (like 'authorized') is likely set.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Check if the widget is still mounted and if permissions are granted
+      if (mounted && authorized) {
+        // This is equivalent to "pressing" the refresh button automatically
+        // when the page is entered and permissions are already granted.
+        _loadDailySteps();
+      } else if (mounted && !authorized) {
+        // If not authorized, the UI should guide the user to grant permissions.
+        // The _loadDailySteps() method itself also checks for 'authorized'
+        // as a safeguard.
+        debugPrint("StepsPage: Not authorized on initial load. Steps will not be fetched automatically.");
       }
+    });
+  }
+
+  // If your _HealthState base class has a way to notify subclasses when 'authorized'
+  // status changes *after* initState (e.g., user grants permissions via a dialog
+  // managed by the base class while this page is visible), you would also call
+  // _loadDailySteps() there. For example:
+  //
+  // void onPermissionsGrantedByBase() { // Imaginary method called by base class
+  //   if (mounted && authorized) {
+  //     _loadDailySteps();
+  //   }
+  // }
+
+
+  Future<void> _loadDailySteps() async {
+    // Prevent multiple simultaneous loads or loading if not authorized
+    if (isLoadingData || !authorized) {
+      if (!authorized) {
+        debugPrint("StepsPage: _loadDailySteps called but not authorized.");
+      }
+      if (isLoadingData) {
+        debugPrint("StepsPage: _loadDailySteps called but already loading data.");
+      }
+      return;
     }
 
-    if (!mounted) return;
-    setState(() => totalSteps7d = total);
+    debugPrint("StepsPage: Starting to load daily steps...");
+    setState(() {
+      isLoadingData = true;
+      // Clear previous data
+      dailySteps.clear();
+      barGroups.clear();
+      dateLabelsForChart.clear();
+      todaysSteps = 0;
+      // If your base class uses 'errorMsg', you might want to clear data-loading specific errors here
+      // errorMsg = null;
+    });
+
+    try {
+      final now = DateTime.now();
+      Map<String, int> newDailySteps = {};
+
+      // Fetch today's steps for prominent display
+      final todayStartTime = DateTime(now.year, now.month, now.day, 0, 0, 0);
+      final todayEndTime = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
+      int currentTodaysSteps = 0;
+      final aggregatedTodaysSteps = await health.getTotalStepsInInterval(todayStartTime, todayEndTime);
+      if (aggregatedTodaysSteps != null) {
+        currentTodaysSteps = aggregatedTodaysSteps;
+      } else {
+        final points = await health.getHealthDataFromTypes(
+          types: const [HealthDataType.STEPS],
+          startTime: todayStartTime,
+          endTime: todayEndTime,
+        );
+        for (final p in points) {
+          final v = (p.value is num) ? (p.value as num).toDouble() : 0.0;
+          currentTodaysSteps += v.round();
+        }
+      }
+      // Update today's steps for the UI immediately if mounted
+      if (mounted) {
+        setState(() {
+          todaysSteps = currentTodaysSteps;
+        });
+      }
+
+      // Load 7-day history for the chart
+      for (int i = 6; i >= 0; i--) {
+        final dayToFetch = now.subtract(Duration(days: i));
+        final startTime = DateTime(dayToFetch.year, dayToFetch.month, dayToFetch.day, 0, 0, 0);
+        final endTime = DateTime(dayToFetch.year, dayToFetch.month, dayToFetch.day, 23, 59, 59, 999);
+        int stepsForDay = 0;
+
+        if (i == 0) { // Today
+          stepsForDay = currentTodaysSteps; // Reuse already fetched value
+        } else {
+          final aggregatedSteps = await health.getTotalStepsInInterval(startTime, endTime);
+          if (aggregatedSteps != null) {
+            stepsForDay = aggregatedSteps;
+          } else {
+            final points = await health.getHealthDataFromTypes(
+              types: const [HealthDataType.STEPS],
+              startTime: startTime,
+              endTime: endTime,
+            );
+            for (final p in points) {
+              final v = (p.value is num) ? (p.value as num).toDouble() : 0.0;
+              stepsForDay += v.round();
+            }
+          }
+        }
+        final dateKey = DateFormat('yyyy-MM-dd').format(startTime);
+        newDailySteps[dateKey] = stepsForDay;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        final sortedKeys = newDailySteps.keys.toList()..sort();
+        dailySteps = {for (var k in sortedKeys) k: newDailySteps[k]!};
+        _prepareBarChartData(); // Prepare data for the chart
+        isLoadingData = false;
+        debugPrint("StepsPage: Daily steps loaded successfully.");
+      });
+    } catch (e) {
+      debugPrint("StepsPage: Error loading daily steps: $e");
+      if (!mounted) return;
+      setState(() {
+        isLoadingData = false;
+        // If errorMsg is managed by your base _HealthState for permissions,
+        // you might set a specific data loading error here, or have a separate one.
+        // For now, we assume the base errorMsg might be used or you handle errors in UI.
+        // errorMsg = "Failed to load step data. Please try again.";
+      });
+    }
   }
+
+  // --- Methods for chart data preparation and titles ---
+  // _prepareBarChartData, bottomTitles, leftTitles, _getChartMaxY
+  // (These methods remain unchanged from the previous version)
+
+  void _prepareBarChartData() {
+    barGroups.clear();
+    dateLabelsForChart.clear();
+    if (dailySteps.isEmpty) return;
+
+    final sortedEntries = dailySteps.entries.toList()..sort((e1, e2) => e1.key.compareTo(e2.key));
+
+    for (int i = 0; i < sortedEntries.length; i++) {
+      final entry = sortedEntries[i];
+      final date = DateFormat('yyyy-MM-dd').parse(entry.key);
+      final steps = entry.value.toDouble();
+
+      barGroups.add(
+        BarChartGroupData(
+          x: i,
+          barRods: [
+            BarChartRodData(
+              toY: steps,
+              color: Colors.teal,
+              width: 16,
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(4),
+                topRight: Radius.circular(4),
+              ),
+            ),
+          ],
+        ),
+      );
+      dateLabelsForChart.add(DateFormat('E').format(date));
+    }
+  }
+
+  Widget bottomTitles(double value, TitleMeta meta) {
+    final index = value.toInt();
+    if (index < 0 || index >= dateLabelsForChart.length) return Container();
+    return SideTitleWidget(
+      axisSide: meta.axisSide,
+      space: 4,
+      child: Text(dateLabelsForChart[index], style: const TextStyle(fontSize: 10)),
+    );
+  }
+
+  Widget leftTitles(double value, TitleMeta meta) {
+    if (value == meta.max || value == meta.min) {}
+    else if (value % 5000 != 0) return Container();
+    return SideTitleWidget(
+      axisSide: meta.axisSide,
+      space: 6,
+      child: Text(NumberFormat.compact().format(value.toInt()), style: const TextStyle(fontSize: 10)),
+    );
+  }
+
+  double _getChartMaxY() {
+    if (dailySteps.isEmpty) return 10000;
+    final maxSteps = dailySteps.values.fold(0, (maxVal, v) => v > maxVal ? v : maxVal).toDouble();
+    if (maxSteps == 0) return 5000;
+    return (maxSteps * 1.2).ceilToDouble();
+  }
+
+  // --- build() method ---
+  // (This method remains largely unchanged from the previous version where the chart was working
+  // and today's step count was displayed. The key is that _loadDailySteps is now called from initState)
 
   @override
   Widget build(BuildContext context) {
+    final numberFormatter = NumberFormat('#,###');
+
     return Scaffold(
-      appBar: AppBar(title: const Text('걸음수')),
+      appBar: AppBar(title: const Text('Past 7 Days Steps')),
       body: Padding(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(16.0),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // Display error messages from base class, if any
             if (errorMsg != null)
-              Text(errorMsg!, style: const TextStyle(color: Colors.red)),
-            Text('권한: ${authorized ? "허용됨" : "미허용"}'),
-            const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8.0),
+                child: Text(errorMsg!, style: TextStyle(color: Theme.of(context).colorScheme.error), textAlign: TextAlign.center),
+              ),
+            // Display permission status from base class
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8.0),
+              child: Text('Permissions: ${authorized ? "Granted" : "Denied / Not Requested"}', textAlign: TextAlign.center),
+            ),
+            // Manual refresh button (still useful)
             Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                ElevatedButton(
-                  onPressed: authorized ? _load : null,
-                  child: const Text('지난 7일 총 걸음수 불러오기'),
-                ),
-                const SizedBox(width: 12),
-                OutlinedButton(
-                  onPressed: () async {
-                    final has = await HealthController.I.hasPermsFor(types);
-                    if (!mounted) return;
-                    setState(() => authorized = has);
-                  },
-                  child: const Text('권한 다시 확인'),
+                ElevatedButton.icon(
+                  onPressed: authorized && !isLoadingData ? _loadDailySteps : null,
+                  icon: isLoadingData ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.refresh),
+                  label: const Text('Load/Refresh Steps'),
                 ),
               ],
             ),
             const SizedBox(height: 24),
-            Text('총합: $totalSteps7d', style: const TextStyle(fontSize: 22)),
+
+            // Display Today's Step Count
+            if (authorized && !isLoadingData)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16.0),
+                child: Text(
+                  "오늘은 ${numberFormatter.format(todaysSteps)}걸음을 걸었습니다!",
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+
+            // UI guide if not authorized
+            if (!authorized && errorMsg == null) // Show only if no overriding error
+              const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("Please grant permissions to view step data."))),
+
+            // Chart and data-related UI (only if authorized)
+            if (authorized) ...[
+              // Loading indicator specifically for when chart data (barGroups) isn't ready yet
+              if (isLoadingData && barGroups.isEmpty)
+                const Expanded(child: Center(child: CircularProgressIndicator(semanticsLabel: 'Loading steps...'))),
+
+              // The Chart
+              if (!isLoadingData && barGroups.isNotEmpty)
+                SizedBox(
+                  height: MediaQuery.of(context).size.height * 0.25,
+                  child: AspectRatio(
+                    aspectRatio: 1.8,
+                    child: Card(
+                      elevation: 2,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 20, bottom: 12, right: 16, left: 6),
+                        child: BarChart(
+                          BarChartData(
+                            alignment: BarChartAlignment.spaceAround,
+                            barGroups: barGroups,
+                            maxY: _getChartMaxY(),
+                            titlesData: FlTitlesData(
+                              show: true,
+                              bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 28, getTitlesWidget: bottomTitles)),
+                              leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 45, getTitlesWidget: leftTitles)),
+                              topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                              rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                            ),
+                            borderData: FlBorderData(show: false),
+                            gridData: FlGridData(
+                              show: true,
+                              drawVerticalLine: false,
+                              horizontalInterval: 5000,
+                              getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.withOpacity(0.5), strokeWidth: 0.4),
+                            ),
+                            barTouchData: BarTouchData(
+                              enabled: true,
+                              touchTooltipData: BarTouchTooltipData(
+                                tooltipBgColor: Colors.blueGrey,
+                                tooltipRoundedRadius: 8,
+                                getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                                  if (group.x < 0 || group.x >= dailySteps.keys.length) return null;
+                                  final dateKey = dailySteps.keys.elementAt(group.x);
+                                  final date = DateFormat('yyyy-MM-dd').parse(dateKey);
+                                  return BarTooltipItem(
+                                    '${DateFormat('MMM d').format(date)}\n',
+                                    const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                                    children: <TextSpan>[
+                                      TextSpan(text: (rod.toY.toInt()).toString(), style: const TextStyle(color: Colors.yellow, fontSize: 12, fontWeight: FontWeight.w500)),
+                                      const TextSpan(text: ' steps', style: TextStyle(color: Colors.white, fontSize: 12)),
+                                    ],
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              // Message if no data found after loading
+              if (!isLoadingData && dailySteps.isEmpty && barGroups.isEmpty && errorMsg == null)
+                const Expanded(child: Center(child: Text("No step data found for the last 7 days.\nPress 'Load/Refresh Steps'.", textAlign: TextAlign.center))),
+            ],
           ],
         ),
       ),
