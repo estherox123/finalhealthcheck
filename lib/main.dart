@@ -1674,7 +1674,7 @@ class _StepsPageState extends _HealthState<StepsPage> {
 
         final aggregated = await health.getTotalStepsInInterval(startTime, endTime);
         if (aggregated != null) {
-          stepsForDay = aggregated;
+          stepsForDay = _coerceToStepCount(aggregated);
         } else {
           final points = await health.getHealthDataFromTypes(
             types: const [HealthDataType.STEPS],
@@ -1683,9 +1683,7 @@ class _StepsPageState extends _HealthState<StepsPage> {
           );
           for (final point in points) {
             final value = point.value;
-            if (value is num) {
-              stepsForDay += value.round();
-            }
+            stepsForDay += _coerceToStepCount(value);
           }
         }
 
@@ -1707,6 +1705,39 @@ class _StepsPageState extends _HealthState<StepsPage> {
         errorMsg = '걸음 수를 불러오지 못했습니다: $e';
       });
     }
+  }
+
+  int _coerceToStepCount(dynamic raw) {
+    if (raw == null) return 0;
+    if (raw is int) return raw;
+    if (raw is double) return raw.round();
+    if (raw is num) return raw.round();
+
+    try {
+      final dynamic numeric = raw.numericValue;
+      if (numeric is num) return numeric.round();
+    } catch (_) {}
+
+    try {
+      final dynamic intValue = raw.intValue;
+      if (intValue is int) return intValue;
+      if (intValue is num) return intValue.round();
+    } catch (_) {}
+
+    try {
+      final dynamic doubleValue = raw.doubleValue;
+      if (doubleValue is num) return doubleValue.round();
+    } catch (_) {}
+
+    try {
+      final dynamic json = raw.toJson();
+      if (json is Map) {
+        final dynamic numeric = json['numericValue'] ?? json['value'];
+        if (numeric is num) return numeric.round();
+      }
+    } catch (_) {}
+
+    return 0;
   }
 
   List<BarChartGroupData> _prepareBarChartData(List<_DailyStepsEntry> entries) {
