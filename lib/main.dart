@@ -92,13 +92,38 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     ),
   ];
 
-  final List<_PermissionToggle> _healthDataScope = [
+  final List<_PermissionToggle> _healthDataScope = const [
+    _PermissionToggle(
+      title: '걸음수',
+      description: '지난 7일 추세와 오늘의 합계를 확인합니다.',
+      availableNow: true,
+    ),
+    _PermissionToggle(
+      title: '수면 패턴',
+      description: '수면 세션과 단계 요약을 불러옵니다.',
+      availableNow: true,
+    ),
     _PermissionToggle(title: '심박수', description: '실시간 심박과 평균 심박'),
     _PermissionToggle(title: '심박변이도', description: 'RMSSD, SDNN 정보'),
-    _PermissionToggle(title: '수면 요약', description: '수면 점수 · 단계 요약'),
     _PermissionToggle(title: '호흡수', description: '야간 평균 호흡수'),
     _PermissionToggle(title: '체중', description: '기초 체중 추세'),
   ];
+
+  static const List<HealthDataType> _healthPermissionTypes = [
+    HealthDataType.STEPS,
+    HealthDataType.SLEEP_SESSION,
+    HealthDataType.SLEEP_ASLEEP,
+    HealthDataType.SLEEP_AWAKE,
+    HealthDataType.SLEEP_DEEP,
+    HealthDataType.SLEEP_LIGHT,
+    HealthDataType.SLEEP_REM,
+    HealthDataType.SLEEP_IN_BED,
+  ];
+
+  bool _healthPermissionChecking = false;
+  bool? _healthPermissionGranted;
+  String? _healthPermissionError;
+  bool _healthStatusChecked = false;
 
   final List<_ConsentItem> _consentItems = [
     _ConsentItem('수면 요약'),
@@ -109,11 +134,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
   final List<String> _hospitals = const ['우리동네 병원', '서울 홈케어 병원', '병원 연동 안 함'];
   final List<String> _frequencies = const ['주간', '월간'];
-  final List<String> _recentLogs = const [
-    '9월 1일 전송 완료 - 우리동네 병원',
-    '8월 25일 전송 완료 - 우리동네 병원',
-    '8월 18일 전송 실패 - 네트워크 오류',
-  ];
+  final List<String> _recentLogs = const [];
 
   bool _notificationsAllowed = true;
   bool _bluetoothPaired = false;
@@ -156,6 +177,47 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     if (_currentStep > 0) {
       setState(() => _currentStep--);
     }
+  }
+
+  Future<void> _updateHealthPermission({bool request = false}) async {
+    if (_healthPermissionChecking) return;
+
+    setState(() {
+      _healthPermissionChecking = true;
+      if (request) {
+        _healthPermissionError = null;
+      }
+    });
+
+    bool granted = false;
+    String? error;
+
+    try {
+      await HealthController.I.ensureConfigured();
+      final available = await HealthController.I.health.isHealthConnectAvailable();
+      if (!available) {
+        error = 'Health Connect 앱을 설치하거나 업데이트한 뒤 다시 시도해 주세요.';
+      } else {
+        final has = request
+            ? await HealthController.I.requestPermsFor(_healthPermissionTypes)
+            : await HealthController.I.hasPermsFor(_healthPermissionTypes);
+        granted = has;
+        if (!has) {
+          error = request
+              ? '권한이 허용되지 않았어요. Health Connect 앱에서 다시 시도해 주세요.'
+              : '필요한 권한이 아직 허용되지 않았어요.';
+        }
+      }
+    } catch (e) {
+      error = '권한 확인 중 오류: $e';
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _healthPermissionGranted = granted;
+      _healthPermissionError = granted ? null : error;
+      _healthPermissionChecking = false;
+    });
   }
 
   @override
@@ -381,10 +443,24 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   }
 
   Widget _buildPermissionWizard(BuildContext context) {
+    if (!_healthStatusChecked) {
+      _healthStatusChecked = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _updateHealthPermission();
+        }
+      });
+    }
+
+    final theme = Theme.of(context);
+    final granted = _healthPermissionGranted == true;
+    final iconColor = granted ? theme.colorScheme.primary : theme.colorScheme.error;
+    final iconData = granted ? Icons.check_circle_outline : Icons.health_and_safety_outlined;
+
     return ListView(
       key: const ValueKey('permissions'),
       children: [
-        Text('권한 요청 마법사', style: Theme.of(context).textTheme.headlineSmall),
+        Text('권한 요청 마법사', style: theme.textTheme.headlineSmall),
         const SizedBox(height: 8),
         const Text('필수 권한만 선택적으로 허용할 수 있습니다. 언제든 설정에서 변경 가능합니다.'),
         const SizedBox(height: 16),
@@ -394,33 +470,78 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
           value: _notificationsAllowed,
           onChanged: (value) => setState(() => _notificationsAllowed = value),
         ),
+        const SizedBox(height: 16),
+        Card(
+          child: ListTile(
+            leading: Icon(iconData, color: iconColor),
+            title: const Text('Health Connect 권한'),
+            subtitle: Text(
+              granted
+                  ? '걸음 · 수면 데이터를 읽어올 수 있도록 권한이 허용되었습니다.'
+                  : (_healthPermissionError ?? 'Health Connect에서 걸음 · 수면 데이터를 읽어올 수 있도록 허용해 주세요.'),
+            ),
+            trailing: _healthPermissionChecking
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : FilledButton(
+                    onPressed:
+                        _healthPermissionChecking ? null : () => _updateHealthPermission(request: true),
+                    child: Text(granted ? '다시 요청' : '권한 요청'),
+                  ),
+          ),
+        ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: _healthPermissionChecking ? null : () => _updateHealthPermission(),
+            icon: const Icon(Icons.refresh),
+            label: const Text('상태 새로고침'),
+          ),
+        ),
         const Divider(height: 32),
         const Text('건강 데이터 범위', style: TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 8),
         ..._healthDataScope.map(
-          (item) => SwitchListTile(
-            title: Text(item.title),
-            subtitle: Text(item.description),
-            value: item.enabled,
-            onChanged: (value) => setState(() => item.enabled = value),
-          ),
+          (item) {
+            final icon = item.availableNow
+                ? (granted ? Icons.check_circle : Icons.lock_outline)
+                : Icons.hourglass_bottom;
+            final color = item.availableNow
+                ? (granted ? theme.colorScheme.primary : theme.colorScheme.outline)
+                : theme.colorScheme.outline;
+            final status = item.availableNow
+                ? (granted
+                    ? 'Health Connect에서 해당 데이터를 읽어올 수 있습니다.'
+                    : '권한을 허용하면 해당 데이터를 읽어올 수 있습니다.')
+                : '기능 준비 중입니다. 추후 업데이트에서 지원될 예정입니다.';
+
+            return ListTile(
+              leading: Icon(icon, color: color),
+              title: Text(item.title),
+              subtitle: Text('${item.description}\n$status'),
+              isThreeLine: true,
+            );
+          },
         ),
         const Divider(height: 32),
         SwitchListTile(
           title: const Text('블루투스 기기 페어링'),
-          subtitle: const Text('웨어러블과 홈 IoT 기기를 자동으로 검색합니다.'),
+          subtitle: const Text('웨어러블과 홈 IoT 기기를 자동으로 검색합니다. (연동 준비 중)'),
           value: _bluetoothPaired,
           onChanged: (value) => setState(() => _bluetoothPaired = value),
         ),
         SwitchListTile(
           title: const Text('로컬 네트워크 접근'),
-          subtitle: const Text('Home Assistant를 검색하고 기기 상태를 동기화합니다.'),
+          subtitle: const Text('Home Assistant를 검색하고 기기 상태를 동기화합니다. (연동 준비 중)'),
           value: _localNetworkAllowed,
           onChanged: (value) => setState(() => _localNetworkAllowed = value),
         ),
         const SizedBox(height: 8),
         Card(
-          color: Theme.of(context).colorScheme.surfaceVariant,
+          color: theme.colorScheme.surfaceVariant,
           child: const ListTile(
             leading: Icon(Icons.info_outline),
             title: Text('권한은 언제든 설정 > 권한 & 데이터에서 수정할 수 있어요.'),
@@ -486,10 +607,19 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                   ),
                 ),
               ),
-              ..._recentLogs.map((log) => ListTile(
+              if (_recentLogs.isEmpty)
+                const ListTile(
+                  leading: Icon(Icons.history),
+                  title: Text('전송 이력이 아직 없습니다.'),
+                  subtitle: Text('건강 데이터를 연동하면 최근 전송 기록이 표시됩니다.'),
+                )
+              else
+                ..._recentLogs.map(
+                  (log) => ListTile(
                     leading: const Icon(Icons.history),
                     title: Text(log),
-                  )),
+                  ),
+                ),
             ],
           ),
         ),
@@ -559,11 +689,11 @@ class _ChecklistEntry {
 }
 
 class _PermissionToggle {
-  _PermissionToggle({required this.title, required this.description, this.enabled = true});
+  const _PermissionToggle({required this.title, required this.description, this.availableNow = false});
 
   final String title;
   final String description;
-  bool enabled;
+  final bool availableNow;
 }
 
 class _ConsentItem {
@@ -648,48 +778,48 @@ class HomeDashboardPage extends StatelessWidget {
       _ConditionMetric(
         icon: Icons.nightlight_round,
         title: '수면 점수',
-        value: '82',
-        trend: '▲ 지난주 대비 +5',
-        level: _StatusLevel.good,
-        caption: '7일 평균 대비',
+        value: '데이터 없음',
+        trend: 'Health Connect 권한을 허용해 주세요.',
+        level: _StatusLevel.warning,
+        caption: '수면 데이터 연동 필요',
       ),
       _ConditionMetric(
         icon: Icons.favorite_outline,
         title: '평균 심박',
-        value: '71 bpm',
-        trend: '— 변화 없음',
-        level: _StatusLevel.good,
-        caption: '안정 범위',
+        value: '데이터 없음',
+        trend: '웨어러블 연동 후 확인할 수 있어요.',
+        level: _StatusLevel.warning,
+        caption: '심박 데이터 연결 필요',
       ),
       _ConditionMetric(
         icon: Icons.bolt_outlined,
         title: '심박변이도',
-        value: '52 ms',
-        trend: '▼ 7일 평균보다 -4',
+        value: '데이터 없음',
+        trend: 'Health Connect에서 허용되면 추세를 분석합니다.',
         level: _StatusLevel.warning,
-        caption: '휴식이 필요해요',
+        caption: '심박변이도 연동 필요',
       ),
       _ConditionMetric(
         icon: Icons.air_outlined,
         title: '야간 호흡수',
-        value: '16 rpm',
-        trend: '— 변화 없음',
-        level: _StatusLevel.good,
-        caption: '안정 상태',
+        value: '데이터 없음',
+        trend: '야간 호흡 데이터를 아직 받아오지 못했습니다.',
+        level: _StatusLevel.warning,
+        caption: '데이터 연동 필요',
       ),
     ];
 
     const environmentMetrics = [
-      _EnvironmentMetric(title: '온도', value: '23℃', hint: '쾌적해요.', level: _StatusLevel.good),
-      _EnvironmentMetric(title: '습도', value: '58%', hint: '쾌적 범위입니다.', level: _StatusLevel.good),
-      _EnvironmentMetric(title: 'CO₂', value: '1,120ppm', hint: '살짝 높아요. 환기를 켜볼까요?', level: _StatusLevel.warning),
-      _EnvironmentMetric(title: 'PM2.5', value: '12㎍/㎥', hint: '깨끗해요.', level: _StatusLevel.good),
+      _EnvironmentMetric(title: '온도', value: '데이터 없음', hint: 'Home Assistant 센서를 연결해 주세요.', level: _StatusLevel.warning),
+      _EnvironmentMetric(title: '습도', value: '데이터 없음', hint: '센서 연동 시 실시간으로 표시됩니다.', level: _StatusLevel.warning),
+      _EnvironmentMetric(title: 'CO₂', value: '데이터 없음', hint: '공기질 센서 연결이 필요합니다.', level: _StatusLevel.warning),
+      _EnvironmentMetric(title: 'PM2.5', value: '데이터 없음', hint: '센서 연동 후 공기질을 안내해 드릴게요.', level: _StatusLevel.warning),
     ];
 
     const recentAlerts = [
-      '이산화탄소가 조금 높아요. 환기를 켤까요?',
-      '어젯밤 수면 중 소음이 감지되었어요.',
-      '병원 전송이 내일 예정되어 있습니다.',
+      '걸음 데이터가 아직 동기화되지 않았어요. Health Connect 권한을 확인해 주세요.',
+      '실내 센서가 연결되지 않았습니다. 네트워크 상태를 점검해 주세요.',
+      '병원 리포트 전송을 시작하려면 동의 절차를 완료해 주세요.',
     ];
 
     return SafeArea(
@@ -984,12 +1114,48 @@ class _HealthHubPageState extends State<HealthHubPage> {
     final theme = Theme.of(context);
 
     const summaryTiles = [
-      _HealthSummaryTile(icon: Icons.local_hotel_outlined, title: '총수면', value: '7시간 20분', level: _StatusLevel.good, caption: '어제 vs 7일 평균 +20분'),
-      _HealthSummaryTile(icon: Icons.directions_walk_outlined, title: '활동량', value: '6,820걸음', level: _StatusLevel.warning, caption: '목표까지 1,180걸음 부족'),
-      _HealthSummaryTile(icon: Icons.favorite_outline, title: '평균 심박', value: '71 bpm', level: _StatusLevel.good, caption: '안정 범위'),
-      _HealthSummaryTile(icon: Icons.monitor_heart_outlined, title: '심박변이도', value: '52 ms', level: _StatusLevel.warning, caption: '평균보다 낮음'),
-      _HealthSummaryTile(icon: Icons.bloodtype_outlined, title: '혈압', value: '118/76', level: _StatusLevel.good, caption: '지난주 대비 안정'),
-      _HealthSummaryTile(icon: Icons.water_drop_outlined, title: '혈당', value: '98 mg/dL', level: _StatusLevel.good, caption: '공복 기준'),
+      _HealthSummaryTile(
+        icon: Icons.local_hotel_outlined,
+        title: '총수면',
+        value: '데이터 없음',
+        level: _StatusLevel.warning,
+        caption: '수면 데이터 연동 후 요약을 제공합니다.',
+      ),
+      _HealthSummaryTile(
+        icon: Icons.directions_walk_outlined,
+        title: '활동량',
+        value: '데이터 없음',
+        level: _StatusLevel.warning,
+        caption: '걸음 데이터를 불러오면 목표 진행률을 보여드릴게요.',
+      ),
+      _HealthSummaryTile(
+        icon: Icons.favorite_outline,
+        title: '평균 심박',
+        value: '데이터 없음',
+        level: _StatusLevel.warning,
+        caption: '웨어러블 연동이 필요합니다.',
+      ),
+      _HealthSummaryTile(
+        icon: Icons.monitor_heart_outlined,
+        title: '심박변이도',
+        value: '데이터 없음',
+        level: _StatusLevel.warning,
+        caption: '권한 허용 시 추세를 분석합니다.',
+      ),
+      _HealthSummaryTile(
+        icon: Icons.bloodtype_outlined,
+        title: '혈압',
+        value: '데이터 없음',
+        level: _StatusLevel.warning,
+        caption: '측정값이 연동되면 표시됩니다.',
+      ),
+      _HealthSummaryTile(
+        icon: Icons.water_drop_outlined,
+        title: '혈당',
+        value: '데이터 없음',
+        level: _StatusLevel.warning,
+        caption: '자가 기록 또는 연동이 필요합니다.',
+      ),
     ];
 
     return SafeArea(
@@ -1015,16 +1181,16 @@ class _HealthHubPageState extends State<HealthHubPage> {
           ),
           const SizedBox(height: 20),
           Card(
-            color: theme.colorScheme.errorContainer.withOpacity(0.35),
+            color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
             child: ListTile(
-              leading: Icon(Icons.warning_amber_outlined, color: theme.colorScheme.error),
-              title: const Text('새벽 3시경 심박변이도가 평소보다 낮았습니다.'),
-              subtitle: const Text('휴식을 늘리고 수분을 충분히 섭취해 보세요.'),
+              leading: Icon(Icons.info_outline, color: theme.colorScheme.primary),
+              title: const Text('건강 이상 신호를 수집하는 중입니다.'),
+              subtitle: const Text('Health Connect와 웨어러블 데이터를 연동하면 이상 징후를 자동으로 알려드릴게요.'),
               trailing: TextButton(
                 onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('주치의와 공유하기 기능은 추후 연결됩니다.')),
+                  const SnackBar(content: Text('데이터 연동 후 주치의 공유 기능을 제공할 예정입니다.')),
                 ),
-                child: const Text('주치의에게 공유'),
+                child: const Text('연동 가이드'),
               ),
             ),
           ),
@@ -1091,10 +1257,10 @@ class _HealthHubPageState extends State<HealthHubPage> {
             child: ListTile(
               leading: const Icon(Icons.lightbulb_outline),
               title: const Text('오늘의 코치'),
-              subtitle: const Text('“낮 동안 활동량이 적었어요. 가벼운 스트레칭을 추천합니다.”'),
+              subtitle: const Text('데이터가 연동되면 맞춤 활동 코칭을 안내해 드릴게요.'),
               trailing: TextButton(
                 onPressed: () => _showWip(context),
-                child: const Text('루틴 보기'),
+                child: const Text('연동 방법'),
               ),
             ),
           ),
@@ -1191,7 +1357,7 @@ class _HomeControlPageState extends State<HomeControlPage> {
   bool _ventilationOn = false;
   bool _automationEnabled = true;
   bool _airPurifierAuto = true;
-  double _filterLife = 76;
+  double? _filterLifePercent;
   bool _curtainOpen = false;
 
   @override
@@ -1312,11 +1478,19 @@ class _HomeControlPageState extends State<HomeControlPage> {
                   ),
                   ListTile(
                     leading: const Icon(Icons.filter_alt_outlined),
-                    title: Text('필터 수명 ${_filterLife.toStringAsFixed(0)}%'),
-                    subtitle: const Text('교체 주기를 확인하세요.'),
+                    title: Text(
+                      _filterLifePercent == null
+                          ? '필터 수명 정보 없음'
+                          : '필터 수명 ${_filterLifePercent!.toStringAsFixed(0)}%',
+                    ),
+                    subtitle: Text(
+                      _filterLifePercent == null
+                          ? '공기청정기를 연동하면 필터 상태를 확인할 수 있습니다.'
+                          : '교체 주기를 확인하세요.',
+                    ),
                     trailing: TextButton(
-                      onPressed: () => _showSnack(context, '필터 주문 링크는 추후 연결됩니다.'),
-                      child: const Text('자세히'),
+                      onPressed: () => _showSnack(context, '기기 연동 후 필터 관리 링크를 제공할 예정입니다.'),
+                      child: const Text('연동 안내'),
                     ),
                   ),
                 ],
