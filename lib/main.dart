@@ -1663,31 +1663,16 @@ class _StepsPageState extends _HealthState<StepsPage> {
 
     try {
       final now = DateTime.now();
+      final startOfToday = DateTime(now.year, now.month, now.day);
       final entries = <_DailyStepsEntry>[];
       int todaySteps = 0;
 
       for (int i = 6; i >= 0; i--) {
-        final day = DateTime(now.year, now.month, now.day).subtract(Duration(days: i));
-        final startTime = day;
-        final endTime = day.add(const Duration(days: 1));
-        int stepsForDay = 0;
+        final dayStart = startOfToday.subtract(Duration(days: i));
+        final dayEnd = dayStart.add(const Duration(days: 1));
+        final stepsForDay = await _sumStepsForInterval(dayStart, dayEnd);
 
-        final aggregated = await health.getTotalStepsInInterval(startTime, endTime);
-        if (aggregated != null) {
-          stepsForDay = _coerceToStepCount(aggregated);
-        } else {
-          final points = await health.getHealthDataFromTypes(
-            types: const [HealthDataType.STEPS],
-            startTime: startTime,
-            endTime: endTime,
-          );
-          for (final point in points) {
-            final value = point.value;
-            stepsForDay += _coerceToStepCount(value);
-          }
-        }
-
-        entries.add(_DailyStepsEntry(date: day, steps: stepsForDay));
+        entries.add(_DailyStepsEntry(date: dayStart, steps: stepsForDay));
         if (i == 0) todaySteps = stepsForDay;
       }
 
@@ -1707,11 +1692,38 @@ class _StepsPageState extends _HealthState<StepsPage> {
     }
   }
 
-  int _coerceToStepCount(dynamic raw) {
-    if (raw == null) return 0;
+  Future<int> _sumStepsForInterval(DateTime startTime, DateTime endTime) async {
+    final aggregated = await health.getTotalStepsInInterval(startTime, endTime);
+    final aggregatedSteps = _tryParseStepCount(aggregated);
+    if (aggregatedSteps != null) {
+      return aggregatedSteps;
+    }
+
+    final points = await health.getHealthDataFromTypes(
+      types: const [HealthDataType.STEPS],
+      startTime: startTime,
+      endTime: endTime,
+    );
+
+    int total = 0;
+    for (final point in points) {
+      final parsed = _tryParseStepCount(point.value);
+      if (parsed != null) {
+        total += parsed;
+      }
+    }
+    return total;
+  }
+
+  int? _tryParseStepCount(dynamic raw) {
+    if (raw == null) return null;
     if (raw is int) return raw;
     if (raw is double) return raw.round();
     if (raw is num) return raw.round();
+    if (raw is String) {
+      final parsed = num.tryParse(raw);
+      if (parsed != null) return parsed.round();
+    }
 
     try {
       final dynamic numeric = raw.numericValue;
@@ -1719,8 +1731,15 @@ class _StepsPageState extends _HealthState<StepsPage> {
     } catch (_) {}
 
     try {
+      final dynamic value = raw.value;
+      if (!identical(value, raw)) {
+        final nested = _tryParseStepCount(value);
+        if (nested != null) return nested;
+      }
+    } catch (_) {}
+
+    try {
       final dynamic intValue = raw.intValue;
-      if (intValue is int) return intValue;
       if (intValue is num) return intValue.round();
     } catch (_) {}
 
@@ -1731,13 +1750,42 @@ class _StepsPageState extends _HealthState<StepsPage> {
 
     try {
       final dynamic json = raw.toJson();
-      if (json is Map) {
-        final dynamic numeric = json['numericValue'] ?? json['value'];
-        if (numeric is num) return numeric.round();
+      if (!identical(json, raw)) {
+        final parsed = _tryParseStepCount(json);
+        if (parsed != null) return parsed;
       }
     } catch (_) {}
 
-    return 0;
+    if (raw is Map) {
+      for (final key in ['numericValue', 'value', 'steps', 'count', 'intValue', 'doubleValue', 'quantity']) {
+        if (raw.containsKey(key)) {
+          final parsed = _tryParseStepCount(raw[key]);
+          if (parsed != null) return parsed;
+        }
+      }
+      for (final entry in raw.values) {
+        if (entry is num) return entry.round();
+        if (entry is Map || entry is Iterable) {
+          final parsed = _tryParseStepCount(entry);
+          if (parsed != null) return parsed;
+        }
+      }
+    }
+
+    if (raw is Iterable) {
+      int sum = 0;
+      bool found = false;
+      for (final item in raw) {
+        final parsed = _tryParseStepCount(item);
+        if (parsed != null) {
+          sum += parsed;
+          found = true;
+        }
+      }
+      if (found) return sum;
+    }
+
+    return null;
   }
 
   List<BarChartGroupData> _prepareBarChartData(List<_DailyStepsEntry> entries) {
@@ -1798,6 +1846,52 @@ class _StepsPageState extends _HealthState<StepsPage> {
   Widget build(BuildContext context) {
     final numberFormatter = NumberFormat('#,###');
     final totalSteps = _history.fold<int>(0, (sum, entry) => sum + entry.steps);
+    final averageSteps = _history.isEmpty ? 0 : (totalSteps / _history.length).round();
+    final bestDay = _history.isEmpty
+        ? null
+        : _history.reduce((current, next) => next.steps > current.steps ? next : current);
+    final quietDay = _history.isEmpty
+        ? null
+        : _history.reduce((current, next) => next.steps < current.steps ? next : current);
+    final double goalProgress = (_todaySteps / 10000).clamp(0.0, 1.0);
+    final remainingSteps = _todaySteps >= 10000 ? 0 : 10000 - _todaySteps;
+
+    String insightHeadline;
+    String? insightSupporting;
+    if (_history.isEmpty) {
+      insightHeadline = '최근 7일 걸음 데이터가 아직 없어요.';
+      insightSupporting = 'Health Connect와 동기화되면 추세를 분석해 드릴게요.';
+    } else if (_todaySteps == 0) {
+      insightHeadline = '오늘 걸음이 아직 집계되지 않았어요.';
+      insightSupporting = '가벼운 산책으로 몸을 깨워보는 건 어떨까요?';
+    } else {
+      final diffFromAverage = _todaySteps - averageSteps;
+      if (diffFromAverage >= 1000) {
+        insightHeadline = '평균보다 ${numberFormatter.format(diffFromAverage)}걸음 더 걸었어요!';
+        insightSupporting = '좋은 페이스예요. 오늘은 스트레칭으로 마무리해 보세요.';
+      } else if (diffFromAverage <= -1000) {
+        insightHeadline = '평균보다 ${numberFormatter.format(diffFromAverage.abs())}걸음 적어요.';
+        insightSupporting = '짧은 산책이나 계단 오르기로 활동량을 채워보세요.';
+      } else {
+        insightHeadline = '평균과 비슷한 활동량이에요.';
+        insightSupporting = '꾸준함을 유지하면 회복에 도움이 돼요.';
+      }
+    }
+
+    String? trendSummary;
+    if (bestDay != null && quietDay != null && bestDay.date != quietDay.date) {
+      trendSummary =
+          '${_formatDayLabel(bestDay.date)}에는 ${numberFormatter.format(bestDay.steps)}걸음으로 가장 활발했어요.';
+      if (quietDay.steps < bestDay.steps) {
+        trendSummary +=
+            '\n${_formatDayLabel(quietDay.date)}에는 ${numberFormatter.format(quietDay.steps)}걸음으로 휴식이 필요해 보였어요.';
+      }
+    }
+
+    final insightDetail = [
+      if (insightSupporting != null) insightSupporting!,
+      if (trendSummary != null) trendSummary,
+    ].join('\n');
 
     return Scaffold(
       appBar: AppBar(title: const Text('7일 걸음수 추세')),
@@ -1824,6 +1918,14 @@ class _StepsPageState extends _HealthState<StepsPage> {
                   ),
                   if (authorized && _history.isNotEmpty)
                     Chip(label: Text('최근 7일 총 ${numberFormatter.format(totalSteps)}걸음')),
+                  if (authorized && _history.isNotEmpty)
+                    Chip(label: Text('7일 평균 ${numberFormatter.format(averageSteps)}걸음')),
+                  if (authorized && bestDay != null)
+                    Chip(
+                      label: Text(
+                        '최고 ${numberFormatter.format(bestDay.steps)}걸음 (${_weekdaySymbols[(bestDay.date.weekday - 1) % _weekdaySymbols.length]})',
+                      ),
+                    ),
                 ],
               ),
               const SizedBox(height: 16),
@@ -1906,31 +2008,141 @@ class _StepsPageState extends _HealthState<StepsPage> {
                       ),
                     ),
                   ),
+                if (!_loading && _barGroups.isEmpty)
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        '최근 7일 걸음 데이터가 없습니다. Health Connect에 데이터가 있는지 확인해 주세요.',
+                      ),
+                    ),
+                  ),
                 if (!_loading && _history.isNotEmpty)
+                  Column(
+                    children: [
+                      Card(
+                        child: Column(
+                          children: [
+                            ListTile(
+                              leading: const Icon(Icons.trending_up),
+                              title: const Text('7일 평균 활동량'),
+                              subtitle: Text('${numberFormatter.format(averageSteps)}걸음'),
+                            ),
+                            if (bestDay != null) const Divider(height: 1),
+                            if (bestDay != null)
+                              ListTile(
+                                leading: const Icon(Icons.arrow_circle_up_outlined),
+                                title: const Text('가장 활발했던 날'),
+                                subtitle: Text(
+                                  '${_formatDayLabel(bestDay.date)} · ${numberFormatter.format(bestDay.steps)}걸음',
+                                ),
+                              ),
+                            if (quietDay != null) const Divider(height: 1),
+                            if (quietDay != null)
+                              ListTile(
+                                leading: const Icon(Icons.arrow_circle_down_outlined),
+                                title: const Text('휴식이 많았던 날'),
+                                subtitle: Text(
+                                  '${_formatDayLabel(quietDay.date)} · ${numberFormatter.format(quietDay.steps)}걸음',
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('오늘 목표 진행도', style: Theme.of(context).textTheme.titleMedium),
+                              const SizedBox(height: 12),
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: LinearProgressIndicator(
+                                  value: goalProgress,
+                                  minHeight: 10,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              Text('10,000걸음 목표의 ${(goalProgress * 100).clamp(0, 100).round()}%를 달성했어요.'),
+                              if (remainingSteps > 0)
+                                Text(
+                                  '약 ${numberFormatter.format(remainingSteps)}걸음을 더 걸으면 목표를 채울 수 있어요.',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              if (remainingSteps == 0)
+                                Text(
+                                  '오늘 목표를 모두 달성했어요! 충분한 스트레칭으로 몸을 풀어보세요.',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Card(
+                        child: Column(
+                          children: [
+                            const ListTile(
+                              leading: Icon(Icons.calendar_view_week_outlined),
+                              title: Text('일별 기록'),
+                              subtitle: Text('최근 7일간의 변화'),
+                            ),
+                            const Divider(height: 1),
+                            for (int i = 0; i < _history.length; i++) ...[
+                              ListTile(
+                                leading: CircleAvatar(
+                                  child: Text(
+                                    _weekdaySymbols[(_history[i].date.weekday - 1) % _weekdaySymbols.length],
+                                  ),
+                                ),
+                                title: Text(_formatDayLabel(_history[i].date)),
+                                subtitle: Text(_differenceLabel(i, numberFormatter)),
+                                trailing: Text('${numberFormatter.format(_history[i].steps)}걸음'),
+                              ),
+                              if (i != _history.length - 1) const Divider(height: 1),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                if (!_loading && _history.isEmpty)
                   Card(
                     child: Column(
-                      children: [
-                        for (int i = 0; i < _history.length; i++)
-                          ListTile(
-                            leading: CircleAvatar(child: Text(DateFormat('E').format(_history[i].date))),
-                            title: Text(DateFormat('M월 d일').format(_history[i].date)),
-                            subtitle: Text(_differenceLabel(i, numberFormatter)),
-                            trailing: Text('${numberFormatter.format(_history[i].steps)}걸음'),
-                          ),
+                      children: const [
+                        ListTile(
+                          leading: Icon(Icons.info_outline),
+                          title: Text('최근 7일 걸음 데이터가 없습니다.'),
+                          subtitle: Text('Health Connect에 데이터가 있는지 확인한 뒤 다시 동기화해 주세요.'),
+                        ),
                       ],
                     ),
                   ),
-                if (!_loading && _history.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.all(16),
-                    child: Text('최근 7일 걸음 데이터가 없습니다. Health Connect에 데이터가 있는지 확인해 주세요.'),
+                const SizedBox(height: 16),
+                Card(
+                  color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.35),
+                  child: ListTile(
+                    leading: const Icon(Icons.insights_outlined),
+                    title: Text(insightHeadline),
+                    subtitle: insightDetail.isEmpty ? null : Text(insightDetail),
                   ),
+                ),
               ],
             ],
           ),
         ),
       ),
     );
+  }
+
+  static const List<String> _weekdaySymbols = ['월', '화', '수', '목', '금', '토', '일'];
+
+  String _formatDayLabel(DateTime date) {
+    final symbol = _weekdaySymbols[(date.weekday - 1) % _weekdaySymbols.length];
+    return '${date.month}월 ${date.day}일 ($symbol)';
   }
 
   String _differenceLabel(int index, NumberFormat formatter) {
