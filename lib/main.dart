@@ -623,6 +623,9 @@ class _SleepPageState extends _HealthState<SleepPage> {
     HealthDataType.SLEEP_IN_BED,
   ];
 
+  @override
+  String get pageSpecificFeatureName => "sleep pattern analysis";
+
   Future<void> _load() async {
     final now = DateTime.now();
     final startOfToday = DateTime(now.year, now.month, now.day);
