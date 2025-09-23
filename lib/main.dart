@@ -1,166 +1,540 @@
 import 'package:flutter/material.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:health/health.dart';
+import 'package:intl/intl.dart';
+
 import 'health_controller.dart';
-import 'package:intl/intl.dart'; // For date formatting
-import 'package:fl_chart/fl_chart.dart'; // Example charting library
 
 void main() => runApp(const MyApp());
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Wellness Demo',
+      title: 'Smart Wellness',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorSchemeSeed: Colors.teal,
         useMaterial3: true,
       ),
-      home: const HomePage(),
+      home: const RootShell(),
+    );
+  }
+}
+
+class RootShell extends StatefulWidget {
+  const RootShell({super.key});
+
+  @override
+  State<RootShell> createState() => _RootShellState();
+}
+
+class _RootShellState extends State<RootShell> {
+  bool _completedOnboarding = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 300),
+      child: _completedOnboarding
+          ? const MainShell(key: ValueKey('main-shell'))
+          : OnboardingFlow(
+              key: const ValueKey('onboarding-flow'),
+              onComplete: () => setState(() => _completedOnboarding = true),
+            ),
     );
   }
 }
 
 /* -------------------------------------------------------------------------- */
-/*                            HealthController(전역)                           */
+/*                                Onboarding                                  */
 /* -------------------------------------------------------------------------- */
-class HealthController {
-  HealthController._();
-  static final HealthController I = HealthController._();
+class OnboardingFlow extends StatefulWidget {
+  const OnboardingFlow({super.key, required this.onComplete});
 
-  final Health health = Health();
-  bool _configured = false;
+  final VoidCallback onComplete;
 
-  Future<void> ensureConfigured() async {
-    if (_configured) return;
-    await health.configure(); // 권한 콜백 런처 등록
-    _configured = true;
-  }
-
-  Future<bool> hasPermsFor(List<HealthDataType> types) async {
-    final reads = List<HealthDataAccess>.filled(types.length, HealthDataAccess.READ);
-    return await health.hasPermissions(types, permissions: reads) ?? false;
-  }
-
-  Future<bool> requestPermsFor(List<HealthDataType> types) async {
-    // 일부 단말 보완
-    try {
-      await HealthController.I.health.installHealthConnect();
-    } catch (_) {
-      // installHealthConnect() 미지원 기기에서도 에러 없이 넘어가도록
-    }
-
-    // (선택) 가용성 점검. 미가용이면 권한 요청이 먹히지 않습니다.
-    final available = await HealthController.I.health.isHealthConnectAvailable();
-    if (!available) {
-      // 사용자에게 Health Connect를 설치/활성화하라고 알림
-      return false;
-    }
-
-    final reads = List<HealthDataAccess>.filled(types.length, HealthDataAccess.READ);
-    final had = await hasPermsFor(types);
-    if (had) return true;
-
-    final ok = await health.requestAuthorization(types, permissions: reads);
-    final after = await hasPermsFor(types); // 요청 직후 재확인(중요)
-    return ok && after;
-  }
+  @override
+  State<OnboardingFlow> createState() => _OnboardingFlowState();
 }
 
-/* -------------------------------------------------------------------------- */
-/*                                    Home                                    */
-/* -------------------------------------------------------------------------- */
-class HomePage extends StatelessWidget {
-  const HomePage({super.key});
+class _OnboardingFlowState extends State<OnboardingFlow> {
+  final PageController _slidesController = PageController();
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+
+  int _slidesIndex = 0;
+  int _currentStep = 0;
+
+  final List<_ChecklistEntry> _checklist = [
+    _ChecklistEntry(
+      title: '인터넷 연결 확인',
+      detail: '와이파이 신호가 약해요. 라우터와 가까이 이동해 주세요.',
+      icon: Icons.wifi_tethering,
+    ),
+    _ChecklistEntry(
+      title: '집안 기기 연결',
+      detail: '연결 필요. 아래 버튼을 눌러 기기를 등록하세요.',
+      icon: Icons.devices_other,
+      actionLabel: '연결하기',
+    ),
+    _ChecklistEntry(
+      title: '필수 센서 확인',
+      detail: '온도 · 습도 · CO₂ · 수면 센서 상태를 점검합니다.',
+      icon: Icons.sensors,
+    ),
+    _ChecklistEntry(
+      title: '건강 데이터 연동',
+      detail: '심박 · 수면 데이터를 읽어오기 위해 권한이 필요합니다.',
+      icon: Icons.favorite_outline,
+    ),
+  ];
+
+  final List<_PermissionToggle> _healthDataScope = [
+    _PermissionToggle(title: '심박수', description: '실시간 심박과 평균 심박'),
+    _PermissionToggle(title: '심박변이도', description: 'RMSSD, SDNN 정보'),
+    _PermissionToggle(title: '수면 요약', description: '수면 점수 · 단계 요약'),
+    _PermissionToggle(title: '호흡수', description: '야간 평균 호흡수'),
+    _PermissionToggle(title: '체중', description: '기초 체중 추세'),
+  ];
+
+  final List<_ConsentItem> _consentItems = [
+    _ConsentItem('수면 요약'),
+    _ConsentItem('심박 · 심박변이도'),
+    _ConsentItem('호흡수'),
+    _ConsentItem('혈압 · 체중'),
+  ];
+
+  final List<String> _hospitals = const ['우리동네 병원', '서울 홈케어 병원', '병원 연동 안 함'];
+  final List<String> _frequencies = const ['주간', '월간'];
+  final List<String> _recentLogs = const [
+    '9월 1일 전송 완료 - 우리동네 병원',
+    '8월 25일 전송 완료 - 우리동네 병원',
+    '8월 18일 전송 실패 - 네트워크 오류',
+  ];
+
+  bool _notificationsAllowed = true;
+  bool _bluetoothPaired = false;
+  bool _localNetworkAllowed = false;
+  bool _consentEnabled = false;
+  String _selectedHospital = '우리동네 병원';
+  String _selectedFrequency = '주간';
+
+  @override
+  void dispose() {
+    _slidesController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  bool get _isLastStep => _currentStep == _totalSteps - 1;
+  int get _totalSteps => 5;
+
+  bool get _canProceed {
+    switch (_currentStep) {
+      case 1:
+        return _checklist.every((c) => c.checked);
+      case 2:
+        return _emailController.text.isNotEmpty && _passwordController.text.isNotEmpty;
+      default:
+        return true;
+    }
+  }
+
+  void _goNext() {
+    if (_isLastStep) {
+      widget.onComplete();
+    } else {
+      setState(() => _currentStep++);
+    }
+  }
+
+  void _goBack() {
+    if (_currentStep > 0) {
+      setState(() => _currentStep--);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Smart Wellness')),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          children: [
-            const Spacer(),
-            _BigButton(
-              label: '헬스',
-              icon: Icons.favorite_outline,
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const HealthMenuPage()),
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        title: const Text('시작 안내'),
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(
+                  _totalSteps,
+                  (index) => Container(
+                    width: 12,
+                    height: 12,
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    decoration: BoxDecoration(
+                      color: index == _currentStep
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.outlineVariant,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(height: 20),
-            _BigButton(
-              label: 'IoT',
-              icon: Icons.devices_other_outlined,
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const IotWipPage()),
+              const SizedBox(height: 20),
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 250),
+                  child: _buildStep(context),
+                ),
               ),
-            ),
-            const Spacer(),
-          ],
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  if (_currentStep > 0)
+                    OutlinedButton.icon(
+                      onPressed: _goBack,
+                      icon: const Icon(Icons.arrow_back),
+                      label: const Text('이전'),
+                    )
+                  else
+                    TextButton(
+                      onPressed: widget.onComplete,
+                      child: const Text('건너뛰기'),
+                    ),
+                  const Spacer(),
+                  FilledButton.icon(
+                    onPressed: _canProceed ? _goNext : null,
+                    icon: Icon(_isLastStep ? Icons.check : Icons.arrow_forward),
+                    label: Text(_isLastStep ? '완료' : '다음'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
-}
 
-class _BigButton extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final VoidCallback onTap;
-  const _BigButton({required this.label, required this.icon, required this.onTap, super.key});
+  Widget _buildStep(BuildContext context) {
+    switch (_currentStep) {
+      case 0:
+        return _buildSlides(context);
+      case 1:
+        return _buildChecklist(context);
+      case 2:
+        return _buildAccountStep(context);
+      case 3:
+        return _buildPermissionWizard(context);
+      case 4:
+        return _buildConsentStep(context);
+      default:
+        return const SizedBox.shrink();
+    }
+  }
 
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: double.infinity,
-      height: 120,
-      child: ElevatedButton(
-        style: ElevatedButton.styleFrom(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          textStyle: const TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
+  Widget _buildSlides(BuildContext context) {
+    final slides = [
+      const _OnboardingSlide(
+        icon: Icons.favorite_outline,
+        title: '건강을 한눈에',
+        description: '수면, 심박, 호흡 상태를 10초 안에 확인할 수 있어요.',
+      ),
+      const _OnboardingSlide(
+        icon: Icons.light_mode_outlined,
+        title: '집안 환경 자동화',
+        description: '조명 · 온도 · 환기를 상황에 맞게 자동으로 조절합니다.',
+      ),
+      const _OnboardingSlide(
+        icon: Icons.local_hospital_outlined,
+        title: '병원 리포트 공유',
+        description: '동의하면 주간 요약을 주치의와 공유할 수 있어요.',
+      ),
+      const _OnboardingSlide(
+        icon: Icons.privacy_tip_outlined,
+        title: '개인정보 보호',
+        description: '권한은 언제든 설정에서 변경할 수 있도록 안내해 드립니다.',
+      ),
+    ];
+
+    return Column(
+      key: const ValueKey('slides'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('캐빈 앱 소개', style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 12),
+        Expanded(
+          child: PageView.builder(
+            controller: _slidesController,
+            itemCount: slides.length,
+            onPageChanged: (index) => setState(() => _slidesIndex = index),
+            itemBuilder: (context, index) => _SlideCard(slide: slides[index]),
+          ),
         ),
-        onPressed: onTap,
-        child: Row(
+        const SizedBox(height: 12),
+        Row(
           mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, size: 34),
-            const SizedBox(width: 12),
-            Text(label),
-          ],
+          children: List.generate(
+            slides.length,
+            (index) => AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              width: index == _slidesIndex ? 32 : 10,
+              height: 10,
+              margin: const EdgeInsets.symmetric(horizontal: 4),
+              decoration: BoxDecoration(
+                color: index == _slidesIndex
+                    ? Theme.of(context).colorScheme.primary
+                    : Theme.of(context).colorScheme.outlineVariant,
+                borderRadius: BorderRadius.circular(24),
+              ),
+            ),
+          ),
         ),
-      ),
+      ],
+    );
+  }
+
+  Widget _buildChecklist(BuildContext context) {
+    return Column(
+      key: const ValueKey('checklist'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('시작 준비 확인', style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 8),
+        const Text('필수 연결을 모두 점검하면 다음 단계로 이동할 수 있습니다.'),
+        const SizedBox(height: 16),
+        Expanded(
+          child: ListView.separated(
+            itemCount: _checklist.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 12),
+            itemBuilder: (context, index) {
+              final item = _checklist[index];
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: item.checked,
+                        onChanged: (value) => setState(() => item.checked = value ?? false),
+                        title: Text(item.title, style: const TextStyle(fontWeight: FontWeight.w600)),
+                        subtitle: Text(item.detail),
+                        secondary: Icon(item.icon),
+                      ),
+                      if (item.actionLabel != null)
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                            onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('${item.actionLabel!} 기능은 추후 구현 예정입니다.')),
+                            ),
+                            child: Text(item.actionLabel!),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAccountStep(BuildContext context) {
+    return ListView(
+      key: const ValueKey('account'),
+      children: [
+        Text('로그인 / 계정 생성', style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 8),
+        const Text('병원 리포트와 IoT 제어 기능을 사용하려면 계정을 생성하세요.'),
+        const SizedBox(height: 20),
+        TextField(
+          controller: _emailController,
+          keyboardType: TextInputType.emailAddress,
+          decoration: const InputDecoration(labelText: '이메일'),
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _passwordController,
+          obscureText: true,
+          decoration: const InputDecoration(labelText: '비밀번호'),
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 20),
+        const Text('계정은 건강 데이터와 IoT 장치를 안전하게 연결하는 데 사용됩니다.'),
+      ],
+    );
+  }
+
+  Widget _buildPermissionWizard(BuildContext context) {
+    return ListView(
+      key: const ValueKey('permissions'),
+      children: [
+        Text('권한 요청 마법사', style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 8),
+        const Text('필수 권한만 선택적으로 허용할 수 있습니다. 언제든 설정에서 변경 가능합니다.'),
+        const SizedBox(height: 16),
+        SwitchListTile(
+          title: const Text('알림 허용'),
+          subtitle: const Text('위급 경보와 환경 변화 알림을 받을 수 있어요.'),
+          value: _notificationsAllowed,
+          onChanged: (value) => setState(() => _notificationsAllowed = value),
+        ),
+        const Divider(height: 32),
+        const Text('건강 데이터 범위', style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        ..._healthDataScope.map(
+          (item) => SwitchListTile(
+            title: Text(item.title),
+            subtitle: Text(item.description),
+            value: item.enabled,
+            onChanged: (value) => setState(() => item.enabled = value),
+          ),
+        ),
+        const Divider(height: 32),
+        SwitchListTile(
+          title: const Text('블루투스 기기 페어링'),
+          subtitle: const Text('웨어러블과 홈 IoT 기기를 자동으로 검색합니다.'),
+          value: _bluetoothPaired,
+          onChanged: (value) => setState(() => _bluetoothPaired = value),
+        ),
+        SwitchListTile(
+          title: const Text('로컬 네트워크 접근'),
+          subtitle: const Text('Home Assistant를 검색하고 기기 상태를 동기화합니다.'),
+          value: _localNetworkAllowed,
+          onChanged: (value) => setState(() => _localNetworkAllowed = value),
+        ),
+        const SizedBox(height: 8),
+        Card(
+          color: Theme.of(context).colorScheme.surfaceVariant,
+          child: const ListTile(
+            leading: Icon(Icons.info_outline),
+            title: Text('권한은 언제든 설정 > 권한 & 데이터에서 수정할 수 있어요.'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildConsentStep(BuildContext context) {
+    return ListView(
+      key: const ValueKey('consent'),
+      children: [
+        Text('병원 데이터 전송 동의', style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 8),
+        const Text('동의하면 설정된 주기에 맞춰 건강 요약을 병원에 전송합니다.'),
+        const SizedBox(height: 16),
+        SwitchListTile(
+          title: const Text('병원 전송 동의'),
+          subtitle: Text(_consentEnabled ? '요약 정보가 정해진 주기로 전송됩니다.' : '동의하지 않으면 병원 전송이 중단됩니다.'),
+          value: _consentEnabled,
+          onChanged: (value) => setState(() => _consentEnabled = value),
+        ),
+        ListTile(
+          title: const Text('전송 대상 병원'),
+          subtitle: Text(_selectedHospital),
+          trailing: DropdownButton<String>(
+            value: _selectedHospital,
+            items: _hospitals.map((h) => DropdownMenuItem(value: h, child: Text(h))).toList(),
+            onChanged: (value) => setState(() => _selectedHospital = value ?? _selectedHospital),
+          ),
+        ),
+        ListTile(
+          title: const Text('전송 주기'),
+          subtitle: Text(_selectedFrequency),
+          trailing: DropdownButton<String>(
+            value: _selectedFrequency,
+            items: _frequencies.map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(),
+            onChanged: (value) => setState(() => _selectedFrequency = value ?? _selectedFrequency),
+          ),
+        ),
+        const Divider(height: 32),
+        const Text('전송 항목 선택'),
+        const SizedBox(height: 8),
+        ..._consentItems.map(
+          (item) => CheckboxListTile(
+            title: Text(item.label),
+            value: item.enabled,
+            onChanged: (value) => setState(() => item.enabled = value ?? false),
+          ),
+        ),
+        const Divider(height: 32),
+        Card(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ListTile(
+                title: const Text('전송 이력'),
+                trailing: IconButton(
+                  icon: const Icon(Icons.picture_as_pdf_outlined),
+                  onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('PDF/CSV 내보내기는 추후 구현 예정입니다.')),
+                  ),
+                ),
+              ),
+              ..._recentLogs.map((log) => ListTile(
+                    leading: const Icon(Icons.history),
+                    title: Text(log),
+                  )),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextButton.icon(
+          onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('개인정보 처리방침 화면은 추후 연결됩니다.')),
+          ),
+          icon: const Icon(Icons.privacy_tip_outlined),
+          label: const Text('개인정보 고지 확인'),
+        ),
+      ],
     );
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/*                                   IoT WIP                                  */
-/* -------------------------------------------------------------------------- */
-class IotWipPage extends StatelessWidget {
-  const IotWipPage({super.key});
+class _OnboardingSlide {
+  const _OnboardingSlide({required this.icon, required this.title, required this.description});
+
+  final IconData icon;
+  final String title;
+  final String description;
+}
+
+class _SlideCard extends StatelessWidget {
+  const _SlideCard({required this.slide});
+
+  final _OnboardingSlide slide;
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('IoT')),
-      body: Center(
+    final theme = Theme.of(context);
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Icon(Icons.construction_outlined, size: 72),
+            Icon(slide.icon, size: 48, color: theme.colorScheme.primary),
+            const SizedBox(height: 20),
+            Text(slide.title, style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
-            const Text('개발중', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 20),
-            OutlinedButton.icon(
-              onPressed: () => Navigator.pop(context),
-              icon: const Icon(Icons.arrow_back),
-              label: const Text('뒤로가기'),
-            ),
+            Text(slide.description, style: theme.textTheme.bodyLarge),
           ],
         ),
       ),
@@ -168,40 +542,631 @@ class IotWipPage extends StatelessWidget {
   }
 }
 
+class _ChecklistEntry {
+  _ChecklistEntry({
+    required this.title,
+    required this.detail,
+    required this.icon,
+    this.actionLabel,
+    this.checked = false,
+  });
+
+  final String title;
+  final String detail;
+  final IconData icon;
+  final String? actionLabel;
+  bool checked;
+}
+
+class _PermissionToggle {
+  _PermissionToggle({required this.title, required this.description, this.enabled = true});
+
+  final String title;
+  final String description;
+  bool enabled;
+}
+
+class _ConsentItem {
+  _ConsentItem(this.label, {this.enabled = true});
+
+  final String label;
+  bool enabled;
+}
+
 /* -------------------------------------------------------------------------- */
-/*                                 Health Menu                                */
+/*                                 Main Shell                                 */
 /* -------------------------------------------------------------------------- */
-class HealthMenuPage extends StatelessWidget {
-  const HealthMenuPage({super.key});
+class MainShell extends StatefulWidget {
+  const MainShell({super.key});
+
+  @override
+  State<MainShell> createState() => _MainShellState();
+}
+
+class _MainShellState extends State<MainShell> {
+  int _index = 0;
+
+  static const _titles = ['홈', '건강', '집안 제어', '응급 연락'];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('헬스')),
-      body: Padding(
+      appBar: AppBar(
+        title: Text(_titles[_index]),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SettingsPage()),
+            ),
+          ),
+        ],
+      ),
+      body: IndexedStack(
+        index: _index,
+        children: const [
+          HomeDashboardPage(),
+          HealthHubPage(),
+          HomeControlPage(),
+          EmergencyContactsPage(),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _index,
+        onDestinationSelected: (value) => setState(() => _index = value),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: '홈'),
+          NavigationDestination(icon: Icon(Icons.monitor_heart_outlined), selectedIcon: Icon(Icons.monitor_heart), label: '건강'),
+          NavigationDestination(icon: Icon(Icons.devices_other_outlined), selectedIcon: Icon(Icons.devices_other), label: '제어'),
+          NavigationDestination(icon: Icon(Icons.sos_outlined), selectedIcon: Icon(Icons.sos), label: '응급'),
+        ],
+      ),
+    );
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                 Home Page                                  */
+/* -------------------------------------------------------------------------- */
+class HomeDashboardPage extends StatelessWidget {
+  const HomeDashboardPage({super.key});
+
+  String _greetingText() {
+    final hour = DateTime.now().hour;
+    if (hour < 6) return '편안한 밤, 캐빈님';
+    if (hour < 12) return '좋은 아침, 캐빈님';
+    if (hour < 18) return '활기찬 오후예요, 캐빈님';
+    return '잔잔한 저녁이네요, 캐빈님';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final today = DateFormat.yMMMMEEEEd().format(DateTime.now());
+    final theme = Theme.of(context);
+
+    const conditionMetrics = [
+      _ConditionMetric(
+        icon: Icons.nightlight_round,
+        title: '수면 점수',
+        value: '82',
+        trend: '▲ 지난주 대비 +5',
+        level: _StatusLevel.good,
+        caption: '7일 평균 대비',
+      ),
+      _ConditionMetric(
+        icon: Icons.favorite_outline,
+        title: '평균 심박',
+        value: '71 bpm',
+        trend: '— 변화 없음',
+        level: _StatusLevel.good,
+        caption: '안정 범위',
+      ),
+      _ConditionMetric(
+        icon: Icons.bolt_outlined,
+        title: '심박변이도',
+        value: '52 ms',
+        trend: '▼ 7일 평균보다 -4',
+        level: _StatusLevel.warning,
+        caption: '휴식이 필요해요',
+      ),
+      _ConditionMetric(
+        icon: Icons.air_outlined,
+        title: '야간 호흡수',
+        value: '16 rpm',
+        trend: '— 변화 없음',
+        level: _StatusLevel.good,
+        caption: '안정 상태',
+      ),
+    ];
+
+    const environmentMetrics = [
+      _EnvironmentMetric(title: '온도', value: '23℃', hint: '쾌적해요.', level: _StatusLevel.good),
+      _EnvironmentMetric(title: '습도', value: '58%', hint: '쾌적 범위입니다.', level: _StatusLevel.good),
+      _EnvironmentMetric(title: 'CO₂', value: '1,120ppm', hint: '살짝 높아요. 환기를 켜볼까요?', level: _StatusLevel.warning),
+      _EnvironmentMetric(title: 'PM2.5', value: '12㎍/㎥', hint: '깨끗해요.', level: _StatusLevel.good),
+    ];
+
+    const recentAlerts = [
+      '이산화탄소가 조금 높아요. 환기를 켤까요?',
+      '어젯밤 수면 중 소음이 감지되었어요.',
+      '병원 전송이 내일 예정되어 있습니다.',
+    ];
+
+    return SafeArea(
+      child: ListView(
         padding: const EdgeInsets.all(20),
-        child: Column(
-          children: [
-            const Spacer(),
-            _BigButton(
-              label: '걸음수',
-              icon: Icons.directions_walk_outlined,
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const StepsPage()),
+        children: [
+          Text(_greetingText(), style: theme.textTheme.headlineSmall),
+          Text(today, style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+          const SizedBox(height: 20),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('오늘의 컨디션', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: conditionMetrics
+                        .map((metric) => _ConditionMetricCard(data: metric))
+                        .toList(),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text('의료적 판단은 의료진과 상의하세요.', style: TextStyle(fontSize: 12)),
+                ],
               ),
             ),
-            const SizedBox(height: 20),
-            _BigButton(
-              label: '수면패턴',
-              icon: Icons.bedtime_outlined,
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const SleepPage()),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('실내 환경', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: environmentMetrics
+                        .map((metric) => _EnvironmentMetricCard(data: metric))
+                        .toList(),
+                  ),
+                ],
               ),
             ),
-            const Spacer(),
-          ],
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('빠른 모드 토글', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.tonalIcon(
+                          onPressed: () => _showSnack(context, '수면 모드로 전환합니다.'),
+                          icon: const Icon(Icons.bedtime_outlined),
+                          label: const Text('수면'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton.tonalIcon(
+                          onPressed: () => _showSnack(context, '휴식 모드로 전환합니다.'),
+                          icon: const Icon(Icons.self_improvement_outlined),
+                          label: const Text('휴식'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton.tonalIcon(
+                          onPressed: () => _showSnack(context, '일상 모드로 전환합니다.'),
+                          icon: const Icon(Icons.wb_sunny_outlined),
+                          label: const Text('일상'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('최근 알림', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  for (final alert in recentAlerts)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.notifications_active_outlined),
+                      title: Text(alert),
+                      trailing: TextButton(
+                        onPressed: () => _showSnack(context, '알림에 대한 응답 처리 예정'),
+                        child: const Text('확인'),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSnack(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+class _ConditionMetricCard extends StatelessWidget {
+  const _ConditionMetricCard({required this.data});
+
+  final _ConditionMetric data;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final style = _statusChipStyle(data.level, scheme);
+
+    return SizedBox(
+      width: 160,
+      child: Card(
+        color: scheme.surfaceVariant.withOpacity(0.6),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(data.icon, color: scheme.primary),
+              const SizedBox(height: 8),
+              Text(data.title, style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Text(
+                data.value,
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(data.trend, style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(color: style.background, borderRadius: BorderRadius.circular(12)),
+                child: Text(style.label, style: TextStyle(color: style.foreground, fontSize: 12, fontWeight: FontWeight.w600)),
+              ),
+              if (data.caption != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(data.caption!, style: Theme.of(context).textTheme.bodySmall),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _EnvironmentMetricCard extends StatelessWidget {
+  const _EnvironmentMetricCard({required this.data});
+
+  final _EnvironmentMetric data;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final style = _statusChipStyle(data.level, scheme);
+
+    return SizedBox(
+      width: 160,
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(data.title, style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              Text(
+                data.value,
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(color: style.background, borderRadius: BorderRadius.circular(12)),
+                child: Text(style.label, style: TextStyle(color: style.foreground, fontSize: 12, fontWeight: FontWeight.w600)),
+              ),
+              const SizedBox(height: 6),
+              Text(data.hint, style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _StatusLevel { good, warning, danger }
+
+class _StatusChipStyle {
+  const _StatusChipStyle({required this.background, required this.foreground, required this.label});
+
+  final Color background;
+  final Color foreground;
+  final String label;
+}
+
+_StatusChipStyle _statusChipStyle(_StatusLevel level, ColorScheme scheme) {
+  switch (level) {
+    case _StatusLevel.good:
+      return _StatusChipStyle(
+        background: scheme.primaryContainer,
+        foreground: scheme.onPrimaryContainer,
+        label: '괜찮음',
+      );
+    case _StatusLevel.warning:
+      return _StatusChipStyle(
+        background: scheme.tertiaryContainer,
+        foreground: scheme.onTertiaryContainer,
+        label: '주의',
+      );
+    case _StatusLevel.danger:
+      return _StatusChipStyle(
+        background: scheme.errorContainer,
+        foreground: scheme.onErrorContainer,
+        label: '도움 필요',
+      );
+  }
+}
+
+class _ConditionMetric {
+  const _ConditionMetric({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.trend,
+    required this.level,
+    this.caption,
+  });
+
+  final IconData icon;
+  final String title;
+  final String value;
+  final String trend;
+  final _StatusLevel level;
+  final String? caption;
+}
+
+class _EnvironmentMetric {
+  const _EnvironmentMetric({
+    required this.title,
+    required this.value,
+    required this.hint,
+    required this.level,
+  });
+
+  final String title;
+  final String value;
+  final String hint;
+  final _StatusLevel level;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                 Health Hub                                 */
+/* -------------------------------------------------------------------------- */
+class HealthHubPage extends StatefulWidget {
+  const HealthHubPage({super.key});
+
+  @override
+  State<HealthHubPage> createState() => _HealthHubPageState();
+}
+
+class _HealthHubPageState extends State<HealthHubPage> {
+  Set<_HealthRange> _selectedRange = const {_HealthRange.today};
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    const summaryTiles = [
+      _HealthSummaryTile(icon: Icons.local_hotel_outlined, title: '총수면', value: '7시간 20분', level: _StatusLevel.good, caption: '어제 vs 7일 평균 +20분'),
+      _HealthSummaryTile(icon: Icons.directions_walk_outlined, title: '활동량', value: '6,820걸음', level: _StatusLevel.warning, caption: '목표까지 1,180걸음 부족'),
+      _HealthSummaryTile(icon: Icons.favorite_outline, title: '평균 심박', value: '71 bpm', level: _StatusLevel.good, caption: '안정 범위'),
+      _HealthSummaryTile(icon: Icons.monitor_heart_outlined, title: '심박변이도', value: '52 ms', level: _StatusLevel.warning, caption: '평균보다 낮음'),
+      _HealthSummaryTile(icon: Icons.bloodtype_outlined, title: '혈압', value: '118/76', level: _StatusLevel.good, caption: '지난주 대비 안정'),
+      _HealthSummaryTile(icon: Icons.water_drop_outlined, title: '혈당', value: '98 mg/dL', level: _StatusLevel.good, caption: '공복 기준'),
+    ];
+
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          Text('건강 요약', style: theme.textTheme.headlineSmall),
+          const SizedBox(height: 12),
+          SegmentedButton<_HealthRange>(
+            segments: const [
+              ButtonSegment(value: _HealthRange.today, label: Text('오늘')),
+              ButtonSegment(value: _HealthRange.week, label: Text('7일')),
+              ButtonSegment(value: _HealthRange.month, label: Text('30일')),
+            ],
+            selected: _selectedRange,
+            onSelectionChanged: (value) => setState(() => _selectedRange = value),
+          ),
+          const SizedBox(height: 20),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: summaryTiles.map((tile) => _HealthSummaryCard(data: tile)).toList(),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            color: theme.colorScheme.errorContainer.withOpacity(0.35),
+            child: ListTile(
+              leading: Icon(Icons.warning_amber_outlined, color: theme.colorScheme.error),
+              title: const Text('새벽 3시경 심박변이도가 평소보다 낮았습니다.'),
+              subtitle: const Text('휴식을 늘리고 수분을 충분히 섭취해 보세요.'),
+              trailing: TextButton(
+                onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('주치의와 공유하기 기능은 추후 연결됩니다.')),
+                ),
+                child: const Text('주치의에게 공유'),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.bar_chart_outlined),
+                  title: const Text('걸음수 추세'),
+                  subtitle: const Text('지난 7일 합계와 일별 추세를 확인합니다.'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const StepsPage()),
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.bedtime_outlined),
+                  title: const Text('수면 패턴'),
+                  subtitle: const Text('수면 단계와 방해 요인을 확인합니다.'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const SleepPage()),
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.monitor_weight_outlined),
+                  title: const Text('체중 · 체성분'),
+                  subtitle: const Text('지난 4주간 변화를 간단히 확인합니다.'),
+                  trailing: const Icon(Icons.insert_chart_outlined),
+                  onTap: () => _showWip(context),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.bloodtype_outlined),
+                  title: const Text('혈압 리포트'),
+                  subtitle: const Text('주간 평균과 측정 가이드를 제공합니다.'),
+                  trailing: const Icon(Icons.insert_chart_outlined),
+                  onTap: () => _showWip(context),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.water_drop_outlined),
+                  title: const Text('혈당 메모'),
+                  subtitle: const Text('식전 · 식후 기록을 간단히 정리합니다.'),
+                  trailing: const Icon(Icons.edit_note_outlined),
+                  onTap: () => _showWip(context),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.science_outlined),
+                  title: const Text('요·대변 검사'),
+                  subtitle: const Text('자가 검사 후 결과를 기록하세요.'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _showWip(context),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.lightbulb_outline),
+              title: const Text('오늘의 코치'),
+              subtitle: const Text('“낮 동안 활동량이 적었어요. 가벼운 스트레칭을 추천합니다.”'),
+              trailing: TextButton(
+                onPressed: () => _showWip(context),
+                child: const Text('루틴 보기'),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showWip(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('해당 기능은 추후 구현 예정입니다.')),
+    );
+  }
+}
+
+enum _HealthRange { today, week, month }
+
+class _HealthSummaryTile {
+  const _HealthSummaryTile({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.level,
+    this.caption,
+  });
+
+  final IconData icon;
+  final String title;
+  final String value;
+  final _StatusLevel level;
+  final String? caption;
+}
+
+class _HealthSummaryCard extends StatelessWidget {
+  const _HealthSummaryCard({required this.data});
+
+  final _HealthSummaryTile data;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final style = _statusChipStyle(data.level, scheme);
+
+    return SizedBox(
+      width: 160,
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(data.icon, color: scheme.primary),
+              const SizedBox(height: 8),
+              Text(data.title, style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Text(
+                data.value,
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(color: style.background, borderRadius: BorderRadius.circular(12)),
+                child: Text(style.label, style: TextStyle(color: style.foreground, fontSize: 12, fontWeight: FontWeight.w600)),
+              ),
+              if (data.caption != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(data.caption!, style: Theme.of(context).textTheme.bodySmall),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -209,7 +1174,396 @@ class HealthMenuPage extends StatelessWidget {
 }
 
 /* -------------------------------------------------------------------------- */
-/*                            Health 공통 베이스 클래스                        */
+/*                              Home Control Page                             */
+/* -------------------------------------------------------------------------- */
+class HomeControlPage extends StatefulWidget {
+  const HomeControlPage({super.key});
+
+  @override
+  State<HomeControlPage> createState() => _HomeControlPageState();
+}
+
+class _HomeControlPageState extends State<HomeControlPage> {
+  final List<String> _zones = const ['전체', '침실', '거실'];
+  int _selectedZone = 0;
+  bool _lightsOn = true;
+  double _targetTemperature = 23;
+  bool _ventilationOn = false;
+  bool _automationEnabled = true;
+  bool _airPurifierAuto = true;
+  double _filterLife = 76;
+  bool _curtainOpen = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          Text('방 / 존 선택', style: theme.textTheme.headlineSmall),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            children: List.generate(
+              _zones.length,
+              (index) => ChoiceChip(
+                label: Text(_zones[index]),
+                selected: _selectedZone == index,
+                onSelected: (value) => setState(() => _selectedZone = index),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('빠른 제어 패널', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  SwitchListTile(
+                    title: const Text('조명'),
+                    subtitle: Text(_lightsOn ? '현재 켜짐' : '현재 꺼짐'),
+                    value: _lightsOn,
+                    onChanged: (value) => setState(() => _lightsOn = value),
+                  ),
+                  const Divider(),
+                  Text('냉난방 온도 설정', style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)),
+                  Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.remove_circle_outline),
+                        onPressed: () => setState(() {
+                          _targetTemperature = ((_targetTemperature - 0.5).clamp(16.0, 30.0)).toDouble();
+                        }),
+                      ),
+                      Expanded(
+                        child: Center(
+                          child: Text('${_targetTemperature.toStringAsFixed(1)}℃', style: theme.textTheme.titleLarge),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.add_circle_outline),
+                        onPressed: () => setState(() {
+                          _targetTemperature = ((_targetTemperature + 0.5).clamp(16.0, 30.0)).toDouble();
+                        }),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  SwitchListTile(
+                    title: const Text('환기'),
+                    subtitle: Text(_ventilationOn ? '환기 팬 가동 중' : '꺼져 있음'),
+                    value: _ventilationOn,
+                    onChanged: (value) => setState(() => _ventilationOn = value),
+                  ),
+                  SwitchListTile(
+                    title: const Text('자동화'),
+                    subtitle: const Text('CO₂ · 미세먼지 · 온습도에 따라 자동 제어'),
+                    value: _automationEnabled,
+                    onChanged: (value) => setState(() => _automationEnabled = value),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('자동화 규칙', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  const ListTile(
+                    leading: Icon(Icons.co2_outlined),
+                    title: Text('CO₂가 1,200ppm 이상 → 환기 켜기'),
+                  ),
+                  const ListTile(
+                    leading: Icon(Icons.air_outlined),
+                    title: Text('PM2.5가 35㎍/㎥ 초과 → 공기청정기 강풍'),
+                  ),
+                  const ListTile(
+                    leading: Icon(Icons.thermostat_outlined),
+                    title: Text('온도가 27℃ 이상 → 냉방 1단계'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('공기청정기', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    title: const Text('자동 모드'),
+                    subtitle: const Text('실내 공기질에 따라 자동 조절'),
+                    value: _airPurifierAuto,
+                    onChanged: (value) => setState(() => _airPurifierAuto = value),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.filter_alt_outlined),
+                    title: Text('필터 수명 ${_filterLife.toStringAsFixed(0)}%'),
+                    subtitle: const Text('교체 주기를 확인하세요.'),
+                    trailing: TextButton(
+                      onPressed: () => _showSnack(context, '필터 주문 링크는 추후 연결됩니다.'),
+                      child: const Text('자세히'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: ListTile(
+              leading: Icon(_curtainOpen ? Icons.window_outlined : Icons.blinds_closed, size: 32),
+              title: const Text('커튼 / 창문'),
+              subtitle: Text(_curtainOpen ? '현재 열려 있음' : '현재 닫혀 있음'),
+              trailing: FilledButton.tonal(
+                onPressed: () => setState(() => _curtainOpen = !_curtainOpen),
+                child: Text(_curtainOpen ? '닫기' : '열기'),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          OutlinedButton.icon(
+            onPressed: () => _showSnack(context, '기기 목록을 새로고침합니다.'),
+            icon: const Icon(Icons.sync),
+            label: const Text('기기 상태 새로고침'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSnack(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                           Emergency Contacts Page                           */
+/* -------------------------------------------------------------------------- */
+class EmergencyContactsPage extends StatefulWidget {
+  const EmergencyContactsPage({super.key});
+
+  @override
+  State<EmergencyContactsPage> createState() => _EmergencyContactsPageState();
+}
+
+class _EmergencyContactsPageState extends State<EmergencyContactsPage> {
+  bool _fallDetectionEnabled = true;
+  bool _shareLocation = true;
+
+  final List<_EmergencyContact> _contacts = const [
+    _EmergencyContact(name: '김보호', relation: '배우자', phone: '010-1234-5678'),
+    _EmergencyContact(name: '이간병', relation: '간병인', phone: '010-9988-7766'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          Text('갤럭시 워치 연동', style: theme.textTheme.headlineSmall),
+          const SizedBox(height: 12),
+          SwitchListTile(
+            title: const Text('낙상 감지'),
+            subtitle: const Text('낙상 시 119와 보호자에게 자동 연락합니다.'),
+            value: _fallDetectionEnabled,
+            onChanged: (value) => setState(() => _fallDetectionEnabled = value),
+          ),
+          SwitchListTile(
+            title: const Text('위치 공유'),
+            subtitle: const Text('응급 상황 시 GPS 위치를 함께 전송합니다.'),
+            value: _shareLocation,
+            onChanged: (value) => setState(() => _shareLocation = value),
+          ),
+          const SizedBox(height: 20),
+          Text('응급 연락처', style: theme.textTheme.titleLarge),
+          const SizedBox(height: 12),
+          ..._contacts.map(
+            (contact) => Card(
+              child: ListTile(
+                leading: const Icon(Icons.person_outline),
+                title: Text('${contact.name} (${contact.relation})'),
+                subtitle: Text(contact.phone),
+                trailing: IconButton(
+                  icon: const Icon(Icons.phone),
+                  onPressed: () => _showSnack(context, '${contact.name}님에게 전화를 연결합니다.'),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: () => _showSnack(context, '연락처 추가 화면은 추후 연결됩니다.'),
+            icon: const Icon(Icons.person_add_alt_1),
+            label: const Text('연락처 추가'),
+          ),
+          const SizedBox(height: 20),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.school_outlined),
+              title: const Text('응급 상황 대처법'),
+              subtitle: const Text('119 신고 전에 호흡, 의식 상태를 확인하세요.'),
+              trailing: TextButton(
+                onPressed: () => _showSnack(context, '응급 매뉴얼은 추후 연결됩니다.'),
+                child: const Text('자세히'),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          ListTile(
+            leading: const Icon(Icons.play_circle_outline),
+            title: const Text('응급 알림 테스트'),
+            subtitle: const Text('보호자에게 테스트 메시지를 보냅니다.'),
+            onTap: () => _showSnack(context, '테스트 알림을 전송했습니다.'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.medical_services_outlined),
+            title: const Text('주치의에게 보내기'),
+            subtitle: const Text('응급 리포트를 병원으로 전송합니다.'),
+            onTap: () => _showSnack(context, '병원 전송은 추후 구현 예정입니다.'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSnack(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+class _EmergencyContact {
+  const _EmergencyContact({required this.name, required this.relation, required this.phone});
+
+  final String name;
+  final String relation;
+  final String phone;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                  Settings                                  */
+/* -------------------------------------------------------------------------- */
+class SettingsPage extends StatelessWidget {
+  const SettingsPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('설정')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          _buildSection(
+            context,
+            title: '계정 & 보안',
+            tiles: [
+              _settingsTile(context, icon: Icons.person_outline, title: '프로필', subtitle: '이름, 연락처, 프로필 이미지'),
+              _settingsTile(context, icon: Icons.lock_outline, title: '비밀번호 변경', subtitle: '2단계 인증, 비밀번호 재설정'),
+              _settingsTile(context, icon: Icons.logout, title: '로그아웃', subtitle: '앱에서 로그아웃합니다.'),
+            ],
+          ),
+          const SizedBox(height: 20),
+          _buildSection(
+            context,
+            title: '권한 & 데이터',
+            tiles: [
+              _settingsTile(context, icon: Icons.favorite_outline, title: '건강 데이터 범위', subtitle: '연동된 항목을 다시 선택합니다.'),
+              _settingsTile(context, icon: Icons.download_outlined, title: '데이터 내보내기', subtitle: 'CSV / PDF로 내보내기'),
+              _settingsTile(context, icon: Icons.delete_outline, title: '데이터 삭제', subtitle: '수집 중단 및 데이터 삭제 요청'),
+            ],
+          ),
+          const SizedBox(height: 20),
+          _buildSection(
+            context,
+            title: '연동',
+            tiles: [
+              _settingsTile(context, icon: Icons.home_outlined, title: 'Home Assistant', subtitle: '토큰 및 엔드포인트 관리'),
+              _settingsTile(context, icon: Icons.watch_outlined, title: '웨어러블 기기', subtitle: '연동된 기기를 확인합니다.'),
+            ],
+          ),
+          const SizedBox(height: 20),
+          _buildSection(
+            context,
+            title: '고지',
+            tiles: [
+              _settingsTile(context, icon: Icons.privacy_tip_outlined, title: '개인정보 처리방침', subtitle: '법적 고지를 확인합니다.'),
+              _settingsTile(context, icon: Icons.article_outlined, title: '오픈소스 라이선스', subtitle: '사용 중인 라이브러리 정보를 확인합니다.'),
+            ],
+          ),
+          const SizedBox(height: 24),
+          Card(
+            color: theme.colorScheme.surfaceVariant,
+            child: const ListTile(
+              leading: Icon(Icons.info_outline),
+              title: Text('앱 버전 0.1.0'),
+              subtitle: Text('FinalHealthCheck Demo'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSection(BuildContext context, {required String title, required List<Widget> tiles}) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        Card(
+          child: Column(
+            children: [
+              for (int i = 0; i < tiles.length; i++) ...[
+                tiles[i],
+                if (i != tiles.length - 1) const Divider(height: 1),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _settingsTile(
+    BuildContext context, {
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    return ListTile(
+      leading: Icon(icon),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"$title" 화면은 추후 연결됩니다.')),
+      ),
+    );
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                        Health base & detail pages                          */
 /* -------------------------------------------------------------------------- */
 abstract class _HealthStatefulPage extends StatefulWidget {
   const _HealthStatefulPage({super.key});
@@ -219,7 +1573,6 @@ abstract class _HealthState<T extends _HealthStatefulPage> extends State<T> {
   bool authorized = false;
   String? errorMsg;
 
-  /// 각 페이지에서 필요한 타입만 정의해준다.
   List<HealthDataType> get types;
 
   Health get health => HealthController.I.health;
@@ -233,13 +1586,19 @@ abstract class _HealthState<T extends _HealthStatefulPage> extends State<T> {
   Future<void> _initHealthFlow() async {
     try {
       await HealthController.I.ensureConfigured();
-
       final has = await HealthController.I.hasPermsFor(types);
       if (!has) {
         final ok = await HealthController.I.requestPermsFor(types);
         authorized = ok;
+        errorMsg = ok ? null : '필요한 권한을 허용해 주세요.';
       } else {
         authorized = true;
+        errorMsg = null;
+      }
+      if (authorized) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) onAuthorizationReady();
+        });
       }
     } catch (e) {
       errorMsg = '권한 초기화 오류: $e';
@@ -247,216 +1606,149 @@ abstract class _HealthState<T extends _HealthStatefulPage> extends State<T> {
       if (mounted) setState(() {});
     }
   }
+
+  @protected
+  void onAuthorizationReady() {}
+
+  Future<void> refreshAuthorization() async {
+    try {
+      final has = await HealthController.I.hasPermsFor(types);
+      if (!mounted) return;
+      setState(() {
+        authorized = has;
+        if (has) {
+          errorMsg = null;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) onAuthorizationReady();
+          });
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        errorMsg = '권한 확인 오류: $e';
+      });
+    }
+  }
 }
 
-/* -------------------------------------------------------------------------- */
-/*                                  Steps Page                                */
-/* -------------------------------------------------------------------------- */
 class StepsPage extends _HealthStatefulPage {
   const StepsPage({super.key});
+
   @override
   State<StepsPage> createState() => _StepsPageState();
 }
 
 class _StepsPageState extends _HealthState<StepsPage> {
-  Map<String, int> dailySteps = {};
-  bool isLoadingData = false;
-  int todaysSteps = 0;
-
-  List<BarChartGroupData> barGroups = [];
-  List<String> dateLabelsForChart = [];
+  bool _loading = false;
+  int _todaySteps = 0;
+  List<_DailyStepsEntry> _history = const [];
+  List<BarChartGroupData> _barGroups = const [];
 
   @override
   List<HealthDataType> get types => const [HealthDataType.STEPS];
 
   @override
-  String get pageSpecificFeatureName => "daily step count tracking";
-
-  @override
-  void initState() {
-    super.initState();
-    // This function will be called once when the widget is inserted into the tree.
-    // We use addPostFrameCallback to ensure that the first frame is built
-    // and any initial state from the base class (like 'authorized') is likely set.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      // Check if the widget is still mounted and if permissions are granted
-      if (mounted && authorized) {
-        // This is equivalent to "pressing" the refresh button automatically
-        // when the page is entered and permissions are already granted.
-        _loadDailySteps();
-      } else if (mounted && !authorized) {
-        // If not authorized, the UI should guide the user to grant permissions.
-        // The _loadDailySteps() method itself also checks for 'authorized'
-        // as a safeguard.
-        debugPrint("StepsPage: Not authorized on initial load. Steps will not be fetched automatically.");
-      }
-    });
+  void onAuthorizationReady() {
+    _loadDailySteps();
   }
 
-  // If your _HealthState base class has a way to notify subclasses when 'authorized'
-  // status changes *after* initState (e.g., user grants permissions via a dialog
-  // managed by the base class while this page is visible), you would also call
-  // _loadDailySteps() there. For example:
-  //
-  // void onPermissionsGrantedByBase() { // Imaginary method called by base class
-  //   if (mounted && authorized) {
-  //     _loadDailySteps();
-  //   }
-  // }
-
-
   Future<void> _loadDailySteps() async {
-    // Prevent multiple simultaneous loads or loading if not authorized
-    if (isLoadingData || !authorized) {
-      if (!authorized) {
-        debugPrint("StepsPage: _loadDailySteps called but not authorized.");
-      }
-      if (isLoadingData) {
-        debugPrint("StepsPage: _loadDailySteps called but already loading data.");
-      }
-      return;
-    }
+    if (_loading || !authorized) return;
 
-    debugPrint("StepsPage: Starting to load daily steps...");
     setState(() {
-      isLoadingData = true;
-      // Clear previous data
-      dailySteps.clear();
-      barGroups.clear();
-      dateLabelsForChart.clear();
-      todaysSteps = 0;
-      // If your base class uses 'errorMsg', you might want to clear data-loading specific errors here
-      // errorMsg = null;
+      _loading = true;
+      errorMsg = null;
     });
 
     try {
       final now = DateTime.now();
-      Map<String, int> newDailySteps = {};
+      final entries = <_DailyStepsEntry>[];
+      int todaySteps = 0;
 
-      // Fetch today's steps for prominent display
-      final todayStartTime = DateTime(now.year, now.month, now.day, 0, 0, 0);
-      final todayEndTime = DateTime(now.year, now.month, now.day, 23, 59, 59, 999);
-      int currentTodaysSteps = 0;
-      final aggregatedTodaysSteps = await health.getTotalStepsInInterval(todayStartTime, todayEndTime);
-      if (aggregatedTodaysSteps != null) {
-        currentTodaysSteps = aggregatedTodaysSteps;
-      } else {
-        final points = await health.getHealthDataFromTypes(
-          types: const [HealthDataType.STEPS],
-          startTime: todayStartTime,
-          endTime: todayEndTime,
-        );
-        for (final p in points) {
-          final v = (p.value is num) ? (p.value as num).toDouble() : 0.0;
-          currentTodaysSteps += v.round();
-        }
-      }
-      // Update today's steps for the UI immediately if mounted
-      if (mounted) {
-        setState(() {
-          todaysSteps = currentTodaysSteps;
-        });
-      }
-
-      // Load 7-day history for the chart
       for (int i = 6; i >= 0; i--) {
-        final dayToFetch = now.subtract(Duration(days: i));
-        final startTime = DateTime(dayToFetch.year, dayToFetch.month, dayToFetch.day, 0, 0, 0);
-        final endTime = DateTime(dayToFetch.year, dayToFetch.month, dayToFetch.day, 23, 59, 59, 999);
+        final day = DateTime(now.year, now.month, now.day).subtract(Duration(days: i));
+        final startTime = day;
+        final endTime = day.add(const Duration(days: 1));
         int stepsForDay = 0;
 
-        if (i == 0) { // Today
-          stepsForDay = currentTodaysSteps; // Reuse already fetched value
+        final aggregated = await health.getTotalStepsInInterval(startTime, endTime);
+        if (aggregated != null) {
+          stepsForDay = aggregated;
         } else {
-          final aggregatedSteps = await health.getTotalStepsInInterval(startTime, endTime);
-          if (aggregatedSteps != null) {
-            stepsForDay = aggregatedSteps;
-          } else {
-            final points = await health.getHealthDataFromTypes(
-              types: const [HealthDataType.STEPS],
-              startTime: startTime,
-              endTime: endTime,
-            );
-            for (final p in points) {
-              final v = (p.value is num) ? (p.value as num).toDouble() : 0.0;
-              stepsForDay += v.round();
+          final points = await health.getHealthDataFromTypes(
+            types: const [HealthDataType.STEPS],
+            startTime: startTime,
+            endTime: endTime,
+          );
+          for (final point in points) {
+            final value = point.value;
+            if (value is num) {
+              stepsForDay += value.round();
             }
           }
         }
-        final dateKey = DateFormat('yyyy-MM-dd').format(startTime);
-        newDailySteps[dateKey] = stepsForDay;
+
+        entries.add(_DailyStepsEntry(date: day, steps: stepsForDay));
+        if (i == 0) todaySteps = stepsForDay;
       }
 
       if (!mounted) return;
       setState(() {
-        final sortedKeys = newDailySteps.keys.toList()..sort();
-        dailySteps = {for (var k in sortedKeys) k: newDailySteps[k]!};
-        _prepareBarChartData(); // Prepare data for the chart
-        isLoadingData = false;
-        debugPrint("StepsPage: Daily steps loaded successfully.");
+        _history = entries;
+        _todaySteps = todaySteps;
+        _barGroups = _prepareBarChartData(entries);
+        _loading = false;
       });
     } catch (e) {
-      debugPrint("StepsPage: Error loading daily steps: $e");
       if (!mounted) return;
       setState(() {
-        isLoadingData = false;
-        // If errorMsg is managed by your base _HealthState for permissions,
-        // you might set a specific data loading error here, or have a separate one.
-        // For now, we assume the base errorMsg might be used or you handle errors in UI.
-        // errorMsg = "Failed to load step data. Please try again.";
+        _loading = false;
+        errorMsg = '걸음 수를 불러오지 못했습니다: $e';
       });
     }
   }
 
-  // --- Methods for chart data preparation and titles ---
-  // _prepareBarChartData, bottomTitles, leftTitles, _getChartMaxY
-  // (These methods remain unchanged from the previous version)
-
-  void _prepareBarChartData() {
-    barGroups.clear();
-    dateLabelsForChart.clear();
-    if (dailySteps.isEmpty) return;
-
-    final sortedEntries = dailySteps.entries.toList()..sort((e1, e2) => e1.key.compareTo(e2.key));
-
-    for (int i = 0; i < sortedEntries.length; i++) {
-      final entry = sortedEntries[i];
-      final date = DateFormat('yyyy-MM-dd').parse(entry.key);
-      final steps = entry.value.toDouble();
-
-      barGroups.add(
+  List<BarChartGroupData> _prepareBarChartData(List<_DailyStepsEntry> entries) {
+    final groups = <BarChartGroupData>[];
+    for (var i = 0; i < entries.length; i++) {
+      final entry = entries[i];
+      groups.add(
         BarChartGroupData(
           x: i,
           barRods: [
             BarChartRodData(
-              toY: steps,
+              toY: entry.steps.toDouble(),
               color: Colors.teal,
               width: 16,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(4),
-                topRight: Radius.circular(4),
-              ),
+              borderRadius: const BorderRadius.only(topLeft: Radius.circular(4), topRight: Radius.circular(4)),
             ),
           ],
         ),
       );
-      dateLabelsForChart.add(DateFormat('E').format(date));
     }
+    return groups;
   }
 
-  Widget bottomTitles(double value, TitleMeta meta) {
+  Widget _buildBottomTitles(double value, TitleMeta meta) {
     final index = value.toInt();
-    if (index < 0 || index >= dateLabelsForChart.length) return Container();
+    if (index < 0 || index >= _history.length) return const SizedBox.shrink();
+    final date = _history[index].date;
+    final label = DateFormat('E').format(date);
     return SideTitleWidget(
       axisSide: meta.axisSide,
-      space: 4,
-      child: Text(dateLabelsForChart[index], style: const TextStyle(fontSize: 10)),
+      space: 6,
+      child: Text(label, style: const TextStyle(fontSize: 10)),
     );
   }
 
-  Widget leftTitles(double value, TitleMeta meta) {
-    if (value == meta.max || value == meta.min) {}
-    else if (value % 5000 != 0) return Container();
+  Widget _buildLeftTitles(double value, TitleMeta meta) {
+    if (value == meta.max || value == meta.min) {
+      return const SizedBox.shrink();
+    }
+    if (value % 5000 != 0) {
+      return const SizedBox.shrink();
+    }
     return SideTitleWidget(
       axisSide: meta.axisSide,
       space: 6,
@@ -464,119 +1756,115 @@ class _StepsPageState extends _HealthState<StepsPage> {
     );
   }
 
-  double _getChartMaxY() {
-    if (dailySteps.isEmpty) return 10000;
-    final maxSteps = dailySteps.values.fold(0, (maxVal, v) => v > maxVal ? v : maxVal).toDouble();
+  double _maxY() {
+    if (_history.isEmpty) return 10000;
+    final maxSteps = _history.fold<int>(0, (maxVal, entry) => entry.steps > maxVal ? entry.steps : maxVal);
     if (maxSteps == 0) return 5000;
     return (maxSteps * 1.2).ceilToDouble();
   }
 
-  // --- build() method ---
-  // (This method remains largely unchanged from the previous version where the chart was working
-  // and today's step count was displayed. The key is that _loadDailySteps is now called from initState)
-
   @override
   Widget build(BuildContext context) {
     final numberFormatter = NumberFormat('#,###');
+    final totalSteps = _history.fold<int>(0, (sum, entry) => sum + entry.steps);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Past 7 Days Steps')),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Display error messages from base class, if any
-            if (errorMsg != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8.0),
-                child: Text(errorMsg!, style: TextStyle(color: Theme.of(context).colorScheme.error), textAlign: TextAlign.center),
-              ),
-            // Display permission status from base class
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8.0),
-              child: Text('Permissions: ${authorized ? "Granted" : "Denied / Not Requested"}', textAlign: TextAlign.center),
-            ),
-            // Manual refresh button (still useful)
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: authorized && !isLoadingData ? _loadDailySteps : null,
-                  icon: isLoadingData ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.refresh),
-                  label: const Text('Load/Refresh Steps'),
+      appBar: AppBar(title: const Text('7일 걸음수 추세')),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: ListView(
+            children: [
+              if (errorMsg != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(errorMsg!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
                 ),
-              ],
-            ),
-            const SizedBox(height: 24),
-
-            // Display Today's Step Count
-            if (authorized && !isLoadingData)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 16.0),
-                child: Text(
-                  "오늘은 ${numberFormatter.format(todaysSteps)}걸음을 걸었습니다!",
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
-                  textAlign: TextAlign.center,
-                ),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  Chip(
+                    avatar: Icon(
+                      authorized ? Icons.check_circle_outline : Icons.error_outline,
+                      color: authorized ? Colors.teal : Theme.of(context).colorScheme.error,
+                    ),
+                    label: Text('권한: ${authorized ? '허용됨' : '미허용'}'),
+                  ),
+                  if (authorized && _history.isNotEmpty)
+                    Chip(label: Text('최근 7일 총 ${numberFormatter.format(totalSteps)}걸음')),
+                ],
               ),
-
-            // UI guide if not authorized
-            if (!authorized && errorMsg == null) // Show only if no overriding error
-              const Center(child: Padding(padding: EdgeInsets.all(16.0), child: Text("Please grant permissions to view step data."))),
-
-            // Chart and data-related UI (only if authorized)
-            if (authorized) ...[
-              // Loading indicator specifically for when chart data (barGroups) isn't ready yet
-              if (isLoadingData && barGroups.isEmpty)
-                const Expanded(child: Center(child: CircularProgressIndicator(semanticsLabel: 'Loading steps...'))),
-
-              // The Chart
-              if (!isLoadingData && barGroups.isNotEmpty)
-                SizedBox(
-                  height: MediaQuery.of(context).size.height * 0.25,
-                  child: AspectRatio(
-                    aspectRatio: 1.8,
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: authorized ? _loadDailySteps : null,
+                    icon: _loading
+                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.refresh),
+                    label: const Text('걸음수 불러오기'),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton(
+                    onPressed: refreshAuthorization,
+                    child: const Text('권한 다시 확인'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              if (!authorized)
+                const Card(
+                  child: Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text('Health Connect 권한을 허용해야 걸음 데이터를 볼 수 있습니다.'),
+                  ),
+                ),
+              if (authorized) ...[
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.directions_walk_outlined),
+                    title: Text('오늘은 ${numberFormatter.format(_todaySteps)}걸음 걸었습니다.'),
+                    subtitle: const Text('걷기 목표는 건강 관리의 기본이에요.'),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (_loading && _barGroups.isEmpty)
+                  const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())),
+                if (!_loading && _barGroups.isNotEmpty)
+                  SizedBox(
+                    height: 260,
                     child: Card(
-                      elevation: 2,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
                       child: Padding(
-                        padding: const EdgeInsets.only(top: 20, bottom: 12, right: 16, left: 6),
+                        padding: const EdgeInsets.fromLTRB(12, 20, 16, 12),
                         child: BarChart(
                           BarChartData(
+                            barGroups: _barGroups,
+                            maxY: _maxY(),
                             alignment: BarChartAlignment.spaceAround,
-                            barGroups: barGroups,
-                            maxY: _getChartMaxY(),
                             titlesData: FlTitlesData(
-                              show: true,
-                              bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 28, getTitlesWidget: bottomTitles)),
-                              leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 45, getTitlesWidget: leftTitles)),
+                              bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 32, getTitlesWidget: _buildBottomTitles)),
+                              leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 44, getTitlesWidget: _buildLeftTitles)),
                               topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                               rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                             ),
+                            gridData: FlGridData(show: true, drawVerticalLine: false, horizontalInterval: 5000),
                             borderData: FlBorderData(show: false),
-                            gridData: FlGridData(
-                              show: true,
-                              drawVerticalLine: false,
-                              horizontalInterval: 5000,
-                              getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.withOpacity(0.5), strokeWidth: 0.4),
-                            ),
                             barTouchData: BarTouchData(
                               enabled: true,
                               touchTooltipData: BarTouchTooltipData(
-                                tooltipBgColor: Colors.blueGrey,
-                                tooltipRoundedRadius: 8,
+                                tooltipBgColor: Theme.of(context).colorScheme.primary,
                                 getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                                  if (group.x < 0 || group.x >= dailySteps.keys.length) return null;
-                                  final dateKey = dailySteps.keys.elementAt(group.x);
-                                  final date = DateFormat('yyyy-MM-dd').parse(dateKey);
+                                  if (group.x < 0 || group.x >= _history.length) return null;
+                                  final entry = _history[group.x];
                                   return BarTooltipItem(
-                                    '${DateFormat('MMM d').format(date)}\n',
-                                    const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                                    children: <TextSpan>[
-                                      TextSpan(text: (rod.toY.toInt()).toString(), style: const TextStyle(color: Colors.yellow, fontSize: 12, fontWeight: FontWeight.w500)),
-                                      const TextSpan(text: ' steps', style: TextStyle(color: Colors.white, fontSize: 12)),
+                                    '${DateFormat('MMM d').format(entry.date)}\n',
+                                    const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                    children: [
+                                      TextSpan(
+                                        text: '${numberFormatter.format(entry.steps)} 걸음',
+                                        style: const TextStyle(color: Colors.white),
+                                      ),
                                     ],
                                   );
                                 },
@@ -587,136 +1875,230 @@ class _StepsPageState extends _HealthState<StepsPage> {
                       ),
                     ),
                   ),
-                ),
-              // Message if no data found after loading
-              if (!isLoadingData && dailySteps.isEmpty && barGroups.isEmpty && errorMsg == null)
-                const Expanded(child: Center(child: Text("No step data found for the last 7 days.\nPress 'Load/Refresh Steps'.", textAlign: TextAlign.center))),
+                if (!_loading && _history.isNotEmpty)
+                  Card(
+                    child: Column(
+                      children: [
+                        for (int i = 0; i < _history.length; i++)
+                          ListTile(
+                            leading: CircleAvatar(child: Text(DateFormat('E').format(_history[i].date))),
+                            title: Text(DateFormat('M월 d일').format(_history[i].date)),
+                            subtitle: Text(_differenceLabel(i, numberFormatter)),
+                            trailing: Text('${numberFormatter.format(_history[i].steps)}걸음'),
+                          ),
+                      ],
+                    ),
+                  ),
+                if (!_loading && _history.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text('최근 7일 걸음 데이터가 없습니다. Health Connect에 데이터가 있는지 확인해 주세요.'),
+                  ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
   }
+
+  String _differenceLabel(int index, NumberFormat formatter) {
+    if (index == 0) return '기준 데이터 없음';
+    final diff = _history[index].steps - _history[index - 1].steps;
+    if (diff == 0) return '— 변화 없음';
+    if (diff > 0) {
+      return '▲ +${formatter.format(diff)}걸음';
+    }
+    return '▼ ${formatter.format(diff.abs())}걸음';
+  }
 }
 
-/* -------------------------------------------------------------------------- */
-/*                                  Sleep Page                                */
-/* -------------------------------------------------------------------------- */
+class _DailyStepsEntry {
+  const _DailyStepsEntry({required this.date, required this.steps});
+
+  final DateTime date;
+  final int steps;
+}
+
 class SleepPage extends _HealthStatefulPage {
   const SleepPage({super.key});
+
   @override
   State<SleepPage> createState() => _SleepPageState();
 }
 
 class _SleepPageState extends _HealthState<SleepPage> {
   Duration totalSleep = Duration.zero;
-  List<HealthDataPoint> stages = [];
+  List<HealthDataPoint> stages = const [];
+  bool _loading = false;
 
   @override
   List<HealthDataType> get types => const [
-    HealthDataType.SLEEP_SESSION,
-    HealthDataType.SLEEP_ASLEEP,
-    HealthDataType.SLEEP_AWAKE,
-    HealthDataType.SLEEP_DEEP,
-    HealthDataType.SLEEP_LIGHT,
-    HealthDataType.SLEEP_REM,
-    HealthDataType.SLEEP_IN_BED,
-  ];
+        HealthDataType.SLEEP_SESSION,
+        HealthDataType.SLEEP_ASLEEP,
+        HealthDataType.SLEEP_AWAKE,
+        HealthDataType.SLEEP_DEEP,
+        HealthDataType.SLEEP_LIGHT,
+        HealthDataType.SLEEP_REM,
+        HealthDataType.SLEEP_IN_BED,
+      ];
 
-  Future<void> _load() async {
-    final now = DateTime.now();
-    final startOfToday = DateTime(now.year, now.month, now.day);
-    final dayStart = startOfToday.subtract(const Duration(days: 1));
-    final dayEnd = startOfToday;
+  @override
+  void onAuthorizationReady() {
+    _loadSleep();
+  }
 
-    final sessions = await health.getHealthDataFromTypes(
-      types: const [HealthDataType.SLEEP_SESSION],
-      startTime: dayStart,
-      endTime: dayEnd,
-    );
-    Duration sum = Duration.zero;
-    for (final s in sessions) {
-      final a = s.dateFrom, b = s.dateTo;
-      if (a != null && b != null) sum += b.difference(a);
-    }
+  Future<void> _loadSleep() async {
+    if (!authorized || _loading) return;
 
-    final stageTypes = const <HealthDataType>[
-      HealthDataType.SLEEP_ASLEEP,
-      HealthDataType.SLEEP_AWAKE,
-      HealthDataType.SLEEP_DEEP,
-      HealthDataType.SLEEP_LIGHT,
-      HealthDataType.SLEEP_REM,
-      HealthDataType.SLEEP_IN_BED,
-    ];
-    final st = await health.getHealthDataFromTypes(
-      types: stageTypes,
-      startTime: dayStart,
-      endTime: dayEnd,
-    );
-
-    if (!mounted) return;
     setState(() {
-      totalSleep = sum;
-      stages = st;
+      _loading = true;
+      errorMsg = null;
     });
+
+    try {
+      final now = DateTime.now();
+      final startOfToday = DateTime(now.year, now.month, now.day);
+      final dayStart = startOfToday.subtract(const Duration(days: 1));
+      final dayEnd = startOfToday;
+
+      final sessions = await health.getHealthDataFromTypes(
+        types: const [HealthDataType.SLEEP_SESSION],
+        startTime: dayStart,
+        endTime: dayEnd,
+      );
+
+      Duration sum = Duration.zero;
+      for (final s in sessions) {
+        final from = s.dateFrom;
+        final to = s.dateTo;
+        if (from != null && to != null) {
+          sum += to.difference(from);
+        }
+      }
+
+      final stageTypes = const <HealthDataType>[
+        HealthDataType.SLEEP_ASLEEP,
+        HealthDataType.SLEEP_AWAKE,
+        HealthDataType.SLEEP_DEEP,
+        HealthDataType.SLEEP_LIGHT,
+        HealthDataType.SLEEP_REM,
+        HealthDataType.SLEEP_IN_BED,
+      ];
+      final stagePoints = await health.getHealthDataFromTypes(
+        types: stageTypes,
+        startTime: dayStart,
+        endTime: dayEnd,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        totalSleep = sum;
+        stages = stagePoints;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        errorMsg = '수면 데이터를 불러오지 못했습니다: $e';
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final hours = totalSleep.inMinutes ~/ 60;
-    final mins = totalSleep.inMinutes % 60;
+    final hours = totalSleep.inHours;
+    final minutes = totalSleep.inMinutes % 60;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('수면패턴')),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (errorMsg != null)
-              Text(errorMsg!, style: const TextStyle(color: Colors.red)),
-            Text('권한: ${authorized ? "허용됨" : "미허용"}'),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                ElevatedButton(
-                  onPressed: authorized ? _load : null,
-                  child: const Text('어제 수면패턴 불러오기'),
+      appBar: AppBar(title: const Text('수면 패턴')),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: ListView(
+            children: [
+              if (errorMsg != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(errorMsg!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
                 ),
-                const SizedBox(width: 12),
-                OutlinedButton(
-                  onPressed: () async {
-                    final has = await HealthController.I.hasPermsFor(types);
-                    if (!mounted) return;
-                    setState(() => authorized = has);
-                  },
-                  child: const Text('권한 다시 확인'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Text('어제 총 수면: $hours시간 $mins분', style: const TextStyle(fontSize: 18)),
-            const Divider(height: 28),
-            const Text('수면 단계 (어제):'),
-            const SizedBox(height: 8),
-            Expanded(
-              child: ListView.builder(
-                itemCount: stages.length,
-                itemBuilder: (_, i) {
-                  final p = stages[i];
-                  final a = p.dateFrom?.toLocal();
-                  final b = p.dateTo?.toLocal();
-                  return ListTile(
-                    dense: true,
-                    title: Text(p.typeString),
-                    subtitle: Text('${a ?? '-'} ~ ${b ?? '-'}  •  ${p.value}'),
-                  );
-                },
+              Wrap(
+                spacing: 8,
+                children: [
+                  Chip(
+                    avatar: Icon(
+                      authorized ? Icons.check_circle_outline : Icons.error_outline,
+                      color: authorized ? Colors.teal : Theme.of(context).colorScheme.error,
+                    ),
+                    label: Text('권한: ${authorized ? '허용됨' : '미허용'}'),
+                  ),
+                ],
               ),
-            ),
-          ],
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: authorized ? _loadSleep : null,
+                    icon: _loading
+                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.refresh),
+                    label: const Text('어제 수면 불러오기'),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton(
+                    onPressed: refreshAuthorization,
+                    child: const Text('권한 다시 확인'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.nightlight_round),
+                  title: Text('어제 총 수면: ${hours}시간 ${minutes}분'),
+                  subtitle: const Text('의료적 판단은 의료진과 상의하세요.'),
+                ),
+              ),
+              const SizedBox(height: 16),
+              if (_loading) const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())),
+              if (!_loading && stages.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text('수면 단계 데이터를 찾지 못했습니다. 웨어러블 연동 상태를 확인해 주세요.'),
+                ),
+              if (!_loading && stages.isNotEmpty)
+                Card(
+                  child: Column(
+                    children: [
+                      for (final stage in stages)
+                        ListTile(
+                          leading: const Icon(Icons.timeline_outlined),
+                          title: Text(stage.typeString),
+                          subtitle: Text(_stageLabel(stage)),
+                        ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
+  }
+
+  String _stageLabel(HealthDataPoint point) {
+    final from = point.dateFrom?.toLocal();
+    final to = point.dateTo?.toLocal();
+    final buffer = StringBuffer();
+    if (from != null && to != null) {
+      buffer.write('${DateFormat('HH:mm').format(from)} ~ ${DateFormat('HH:mm').format(to)}');
+      final duration = to.difference(from);
+      buffer.write(' (${duration.inMinutes}분)');
+    }
+    if (point.value != null) {
+      buffer.write(' • ${point.value}');
+    }
+    return buffer.isEmpty ? '기록 없음' : buffer.toString();
   }
 }
