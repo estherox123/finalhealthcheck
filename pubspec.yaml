@@ -31,10 +31,11 @@ dependencies:
   flutter:
     sdk: flutter
   health: ^13.1.4
-  intl: ^0.18.0 # Or latest version
+  intl: ^0.18.1 # Or latest version
   fl_chart: ^0.66.0 # Or the latest version of fl_chart
   permission_handler: ^11.3.1
   android_intent_plus: ^5.1.0   # ← 옵션 (설정화면 이동용)
+  package_info_plus: ^4.2.0
 
 
   # The following adds the Cupertino Icons font to your application.

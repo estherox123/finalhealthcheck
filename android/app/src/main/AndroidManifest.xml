@@ -1,4 +1,6 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+<?xml version="1.0" encoding="utf-8"?>
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.healthcheck.finalhealthcheck">
 
     <!-- Health Connect read permissions -->
@@ -7,19 +9,28 @@
     <!-- (권장) 일부 단말 보완 -->
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
+    <!-- Health Connect 앱 조회 (Android 13 이하에서 필요) -->
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
+
     <application
         android:label="finalhealthcheck"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:enableOnBackInvokedCallback="true">
+
         <meta-data android:name="flutterEmbedding" android:value="2" />
+
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop">
-            <!-- 런처 -->
+
+            <!-- Launcher -->
             <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
             <!-- ✅ Android 13 이하: 라쇼날 진입 -->
@@ -41,9 +52,4 @@
             </intent-filter>
         </activity-alias>
     </application>
-
-    <!-- Health Connect 앱 조회 (Android 13 이하에서 필요) -->
-    <queries>
-        <package android:name="com.google.android.apps.healthdata" />
-    </queries>
 </manifest>

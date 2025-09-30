@@ -1,5 +1,6 @@
-import 'package:health/health.dart';                       // Health, HealthDataType, ...
-import 'package:permission_handler/permission_handler.dart';// Permission
+// lib/health_controller.dart
+import 'package:health/health.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class HealthController {
   HealthController._();
