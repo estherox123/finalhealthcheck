@@ -29,6 +29,17 @@ class _StepsPageState extends HealthState<StepsPage> {
     });
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Auto-refresh when page becomes visible and is authorized
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && authorized && !isLoadingData) {
+        _loadDailySteps();
+      }
+    });
+  }
+
   Future<void> _loadDailySteps() async {
     if (isLoadingData || !authorized) return;
 
@@ -116,7 +127,10 @@ class _StepsPageState extends HealthState<StepsPage> {
         x: i,
         barRods: [BarChartRodData(toY: steps, width: 16, borderRadius: const BorderRadius.only(topLeft: Radius.circular(4), topRight: Radius.circular(4)))],
       ));
-      dateLabelsForChart.add(DateFormat('E').format(DateTime.parse(e.key)));
+      // Convert English day names to Korean
+      final dayOfWeek = DateTime.parse(e.key).weekday;
+      final koreanDays = ['월', '화', '수', '목', '금', '토', '일'];
+      dateLabelsForChart.add(koreanDays[dayOfWeek - 1]);
     }
   }
 
@@ -147,7 +161,32 @@ class _StepsPageState extends HealthState<StepsPage> {
             ),
             const SizedBox(height: 16),
             if (authorized && !isLoadingData)
-              Text('오늘: ${nf.format(todaysSteps)} 걸음', style: Theme.of(context).textTheme.titleLarge),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.teal.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.teal.withOpacity(0.3)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.directions_walk,
+                      color: Colors.teal[700],
+                      size: 28,
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      '오늘: ${nf.format(todaysSteps)} 걸음',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.teal[700],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 16),
             if (authorized && isLoadingData && barGroups.isEmpty)
               const Expanded(child: Center(child: CircularProgressIndicator())),
@@ -174,6 +213,26 @@ class _StepsPageState extends HealthState<StepsPage> {
                   ),
                   borderData: FlBorderData(show: false),
                   gridData: FlGridData(show: true, drawVerticalLine: false, horizontalInterval: 5000),
+                  barTouchData: BarTouchData(
+                    enabled: true,
+                    touchTooltipData: BarTouchTooltipData(
+                      tooltipBgColor: Colors.teal,
+                      tooltipRoundedRadius: 8,
+                      getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                        if (group.x < 0 || group.x >= dailySteps.keys.length) return null;
+                        final dateKey = dailySteps.keys.elementAt(group.x);
+                        final date = DateFormat('yyyy-MM-dd').parse(dateKey);
+                        return BarTooltipItem(
+                          '${date.month}/${date.day}\n',
+                          const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                          children: <TextSpan>[
+                            TextSpan(text: '${rod.toY.toInt()}', style: const TextStyle(color: Colors.yellow, fontSize: 12, fontWeight: FontWeight.w500)),
+                            const TextSpan(text: ' 걸음', style: TextStyle(color: Colors.white, fontSize: 12)),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
                 )),
               ),
           ],

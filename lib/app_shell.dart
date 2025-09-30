@@ -4,7 +4,6 @@ import 'home_page.dart';
 import 'health_summary_page.dart';
 import 'device_control_page.dart';
 import 'emergency_contacts_page.dart';
-import 'health_debug_page.dart';
 import 'health_controller.dart';
 import 'package:health/health.dart'; // ← 필요
 
@@ -23,7 +22,6 @@ class _AppShellState extends State<AppShell> {
     const HealthSummaryPage(),
     const DeviceControlPage(),
     const EmergencyContactsPage(),
-    const HealthDebugPage(),
   ];
 
   @override
@@ -56,7 +54,6 @@ class _AppShellState extends State<AppShell> {
           BottomNavigationBarItem(icon: Icon(Icons.monitor_heart_outlined), label: '건강'),
           BottomNavigationBarItem(icon: Icon(Icons.devices_other_outlined), label: '제어'),
           BottomNavigationBarItem(icon: Icon(Icons.emergency_outlined), label: '긴급'),
-          BottomNavigationBarItem(icon: Icon(Icons.bug_report_outlined), label: '디버그'),
         ],
       ),
     );
