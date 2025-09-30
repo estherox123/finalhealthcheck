@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// 홈 대시보드 (Compact 모드 자동 전환: 작은 화면/큰 글꼴에서 레이아웃이 양보)
+/// 홈 대시보드 (컨디션 카드 항상 2열)
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
   @override
@@ -87,12 +87,16 @@ class _HomePageState extends State<HomePage> {
     final double textScale = media.textScaler.scale(1.0);
     final bool compact = (w < 400) || (textScale > 1.2);
 
-    // 레이아웃 파라미터 (Compact에서 더 촘촘)
+    // 레이아웃 파라미터
     final double hPad = compact ? 12.0 : 16.0;
     final double gap = compact ? 8.0 : 12.0;
-    final bool singleCol = compact || w < 420;
-    final double cardWidth = singleCol ? double.infinity : (w - hPad * 2 - gap) / 2;
-    final double typeScale = compact ? 0.92 : 1.0; // 타이포 소폭 축소
+    final double typeScale = compact ? 0.92 : 1.0;
+
+    // 컨디션 카드용 크기 추정 (항상 2열)
+    final double gridSpacing = gap;
+    final double itemWidth = (w - hPad * 2 - gridSpacing) / 2;
+    final double itemHeight = compact ? 132.0 : 144.0; // 카드 높이(추정)
+    final double childAspectRatio = itemWidth / itemHeight;
 
     return Scaffold(
       appBar: AppBar(title: const Text('오늘의 건강 대시보드')),
@@ -108,7 +112,7 @@ class _HomePageState extends State<HomePage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(greet,
-                          maxLines: 2, // Compact에서 2줄 허용
+                          maxLines: 2,
                           style: _scale(
                             Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
                             typeScale,
@@ -132,76 +136,68 @@ class _HomePageState extends State<HomePage> {
             ),
             const SizedBox(height: 12),
 
-            // 2) 오늘의 컨디션
+            // 2) 오늘의 컨디션 (항상 2열 Grid)
             Text('오늘의 컨디션',
                 style: _scale(
                   Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
                   typeScale,
                 )),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: gap,
-              runSpacing: gap,
+            GridView.count(
+              crossAxisCount: 2,
+              crossAxisSpacing: gridSpacing,
+              mainAxisSpacing: gridSpacing,
+              childAspectRatio: childAspectRatio,
+              physics: const NeverScrollableScrollPhysics(),
+              shrinkWrap: true,
               children: [
-                SizedBox(
-                  width: cardWidth,
-                  child: _ConditionCard(
-                    title: '수면 점수',
-                    valueText: '$sleepScore',
-                    unit: '/100',
-                    color: _statusColorFor('sleep', sleepScore),
-                    delta: sleepDelta,
-                    caption: '의료적 판단은 의료진과 상의하세요.',
-                    icon: Icons.bedtime_outlined,
-                    typeScale: typeScale,
-                    compact: compact,
-                    onTap: () {},
-                  ),
+                _ConditionCard(
+                  title: '수면 점수',
+                  valueText: '$sleepScore',
+                  unit: '/100',
+                  color: _statusColorFor('sleep', sleepScore),
+                  delta: sleepDelta,
+                  caption: '의료적 판단은 의료진과 상의하세요.',
+                  icon: Icons.bedtime_outlined,
+                  typeScale: typeScale,
+                  compact: compact,
+                  onTap: () {},
                 ),
-                SizedBox(
-                  width: cardWidth,
-                  child: _ConditionCard(
-                    title: '심박수',
-                    valueText: '$heartRate',
-                    unit: ' bpm',
-                    color: _statusColorFor('hr', heartRate),
-                    delta: hrDelta,
-                    caption: '7일 평균 대비',
-                    icon: Icons.favorite_outline,
-                    typeScale: typeScale,
-                    compact: compact,
-                    onTap: () {},
-                  ),
+                _ConditionCard(
+                  title: '심박수',
+                  valueText: '$heartRate',
+                  unit: ' bpm',
+                  color: _statusColorFor('hr', heartRate),
+                  delta: hrDelta,
+                  caption: '7일 평균 대비',
+                  icon: Icons.favorite_outline,
+                  typeScale: typeScale,
+                  compact: compact,
+                  onTap: () {},
                 ),
-                SizedBox(
-                  width: cardWidth,
-                  child: _ConditionCard(
-                    title: '심박변이도',
-                    valueText: '$hrv',
-                    unit: ' ms',
-                    color: _statusColorFor('hrv', hrv),
-                    delta: hrvDelta,
-                    caption: '7일 평균 대비',
-                    icon: Icons.multiline_chart,
-                    typeScale: typeScale,
-                    compact: compact,
-                    onTap: () {},
-                  ),
+                _ConditionCard(
+                  title: '심박변이도',
+                  valueText: '$hrv',
+                  unit: ' ms',
+                  color: _statusColorFor('hrv', hrv),
+                  delta: hrvDelta,
+                  caption: '7일 평균 대비',
+                  icon: Icons.multiline_chart,
+                  typeScale: typeScale,
+                  compact: compact,
+                  onTap: () {},
                 ),
-                SizedBox(
-                  width: cardWidth,
-                  child: _ConditionCard(
-                    title: '호흡수',
-                    valueText: respiration.toStringAsFixed(1),
-                    unit: ' rpm',
-                    color: _statusColorFor('resp', respiration),
-                    delta: respDelta,
-                    caption: '야간 평균',
-                    icon: Icons.air_outlined,
-                    typeScale: typeScale,
-                    compact: compact,
-                    onTap: () {},
-                  ),
+                _ConditionCard(
+                  title: '호흡수',
+                  valueText: respiration.toStringAsFixed(1),
+                  unit: ' rpm',
+                  color: _statusColorFor('resp', respiration),
+                  delta: respDelta,
+                  caption: '야간 평균',
+                  icon: Icons.air_outlined,
+                  typeScale: typeScale,
+                  compact: compact,
+                  onTap: () {},
                 ),
               ],
             ),
@@ -271,7 +267,7 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ] else ...[
-              // 세로형 (Compact) — 버튼은 아래로 내려 트렁크 방지
+              // 세로형 (Compact)
               _EnvTile.vertical(
                 label: '온도',
                 value: '${temp.toStringAsFixed(1)}°C',
@@ -455,14 +451,14 @@ class _ConditionCard extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               title,
-              maxLines: 2, // 제목 2줄 허용
+              maxLines: 2,
               style: _s(Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700), typeScale),
             ),
             const SizedBox(height: 4),
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                // 값+단위는 FittedBox로 축소 표시(잘림 대신 축소)
+                // 값+단위를 FittedBox로 축소 (잘림 대신 축소)
                 Expanded(
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -506,7 +502,7 @@ class _ConditionCard extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               caption,
-              maxLines: 2, // 안내문도 2줄 허용
+              maxLines: 2,
               style: _s(Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[700]), typeScale),
             ),
           ],
@@ -551,7 +547,7 @@ class _EnvTile extends StatelessWidget {
     final isVertical = bottom != null;
 
     if (isVertical) {
-      // 세로형: 아이콘/라벨/값을 위에서 아래로, 버튼은 가장 아래
+      // 세로형
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
@@ -619,7 +615,7 @@ class _EnvTile extends StatelessWidget {
               children: [
                 Text(
                   label,
-                  maxLines: 2, // 2줄 허용해 내용 우선
+                  maxLines: 2,
                   style: _s(Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700), typeScale),
                 ),
                 const SizedBox(height: 4),
@@ -717,7 +713,7 @@ class _NotiTile extends StatelessWidget {
       ),
       title: Text(
         item.text,
-        maxLines: 3, // 알림은 3줄까지 허용 (보여주기 우선)
+        maxLines: 3,
         style: _s(const TextStyle(fontWeight: FontWeight.w600), typeScale),
       ),
       trailing: const Icon(Icons.chevron_right),
