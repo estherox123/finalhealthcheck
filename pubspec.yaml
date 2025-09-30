@@ -36,7 +36,7 @@ dependencies:
   permission_handler: ^11.3.1
   android_intent_plus: ^5.1.0   # ← 옵션 (설정화면 이동용)
   package_info_plus: ^4.2.0
-
+  shared_preferences: ^2.2.0
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.

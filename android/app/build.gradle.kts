@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.healthcheck.finalhealthcheck"
-    compileSdk = 35          // Android 14 (API 35)
+    compileSdk = 36          // Android 14 (API 35)
     ndkVersion = flutter.ndkVersion
 
     defaultConfig {

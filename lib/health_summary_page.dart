@@ -28,15 +28,15 @@ class HealthSummaryPage extends StatelessWidget {
               onTap: () => Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const SleepDetailPage())),
             ),
-            _BigButton(
+            //HIDE DEBUG BUTTON FOR AUTH CHECK
+            /*_BigButton(
               label: '디버그(권한/등록 확인)',
               icon: Icons.bug_report_outlined,
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const HealthDebugPage()),
               ),
-            ),
-
+            ),*/
             const Spacer(),
           ],
         ),

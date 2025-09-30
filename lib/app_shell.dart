@@ -21,7 +21,7 @@ class _AppShellState extends State<AppShell> {
     const HomePage(),
     const HealthSummaryPage(),
     const DeviceControlPage(),
-    const EmergencyContactsPage(),
+    const EmergencyContactPage(),
   ];
 
   @override
