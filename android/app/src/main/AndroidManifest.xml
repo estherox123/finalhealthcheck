@@ -12,6 +12,7 @@
     <!-- Health Connect 앱 조회 (Android 13 이하에서 필요) -->
     <queries>
         <package android:name="com.google.android.apps.healthdata" />
+        <package android:name="com.samsung.android.app.healthdata" />
     </queries>
 
     <application

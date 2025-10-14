@@ -1,7 +1,7 @@
-// lib/base_health_page.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:health/health.dart';
-import 'health_controller.dart';
+import '../controllers/health_controller.dart';
 
 abstract class HealthStatefulPage extends StatefulWidget {
   const HealthStatefulPage({super.key});
@@ -10,6 +10,9 @@ abstract class HealthStatefulPage extends StatefulWidget {
 abstract class HealthState<T extends HealthStatefulPage> extends State<T> {
   bool authorized = false;
   String? errorMsg;
+
+  final Completer<bool> _authReady = Completer<bool>();
+  Future<bool> get authReady => _authReady.future;
 
   /// 각 페이지에서 필요한 타입만 정의
   List<HealthDataType> get types;
@@ -25,19 +28,13 @@ abstract class HealthState<T extends HealthStatefulPage> extends State<T> {
   Future<void> _initHealthFlow() async {
     try {
       await HealthController.I.ensureConfigured();
-
-      final has = await HealthController.I.hasPermsFor(types);
-      if (!has) {
-        final ok = await HealthController.I.requestPermsFor(types);
-        authorized = ok;
-      } else {
-        authorized = true;
-      }
+      // hasPermsFor / requestPermsFor 대신 단일 메서드로 처리
+      authorized = await HealthController.I.requestAllPermsIfNeeded(types);
     } catch (e) {
       errorMsg = '권한 초기화 오류: $e';
     } finally {
+      if (!_authReady.isCompleted) _authReady.complete(authorized);
       if (mounted) setState(() {});
     }
   }
 }
-

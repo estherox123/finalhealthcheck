@@ -1,0 +1,44 @@
+IoT Layer 구조 안내
+
+
+UI(DeviceControlPage)
+        │    (listen/setState)
+        ▼
+Controller(DeviceControlController)
+        │    (메서드 호출·결과 캐시 반영)
+        ▼
+Repository(IotRepository)
+        │    (API 호출 + 캐시 관리)
+        ▼
+API(IotApi / MockIotApi ← 지금은 이거 사용)
+        │    (실서비스 교체 지점)
+        ▼
+Devices/Cloud(추후: SmartThings 등)
+
+
+//////////////////////////////////////////////////////////////////////////////
+
+파일 역할
+
+//models.dart
+IoT에서 쓰는 모든 타입(상태 모델) 정의.
+예) AirconState, HrvState, BlindsStatus, LightRoomState, IotSnapshot 등.
+→ UI/비즈니스 로직/저장소가 동일한 타입을 공유하니 타입 안정성이 좋아짐.
+
+//iot_api.dart
+외부 연동을 위한 추상 인터페이스.
+→ 실제 연동 시 이 인터페이스를 구현하면 됨(예: SmartThingsApi implements IotApi).
+
+//mock_iot_api.dart
+네트워크 없이도 동작하는 데모/테스트용 구현.
+간단한 지연(~200ms)과 메모리 상태를 흉내냄.
+
+//iot_repository.dart
+API 위의 얇은 래퍼 + 캐시.
+-최초 로드시 fetchSnapshot()으로 전체 상태 가져와 내부 캐시에 보관
+-이후 제어 메서드(에어컨/조명 등)는 API 호출 후 캐시까지 갱신해 컨트롤러가 즉시 최신 상태를 받도록 함
+
+//device_control_controller.dart
+페이지(UI)를 위한 상태 관리자(ChangeNotifier).
+-init()에서 레포지토리 로드 → snapshot 보관 → notifyListeners()
+-UI가 누르는 동작(온도조절/타이머/조명 토글 등)을 레포지토리에 위임하고, 결과로 받은 상태로 snapshot을 갱신

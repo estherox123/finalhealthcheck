@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'phone_format.dart';
+import '../phone_format.dart';
 
 class ContactSettingsPage extends StatefulWidget {
   final String initialHospitalName;

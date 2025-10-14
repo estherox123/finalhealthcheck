@@ -1,11 +1,11 @@
 // lib/app_shell.dart
 import 'package:flutter/material.dart';
-import 'home_page.dart';
-import 'health_summary_page.dart';
-import 'device_control_page.dart';
-import 'emergency_contacts_page.dart';
-import 'health_controller.dart';
-import 'package:health/health.dart'; // ← 필요
+import 'controllers/health_controller.dart';
+import 'pages/home_page.dart';
+import 'pages/health_summary_page.dart';
+import 'pages/device_control_page.dart';
+import 'pages/emergency_contacts_page.dart';
+import 'package:health/health.dart';
 
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
@@ -17,27 +17,27 @@ class _AppShellState extends State<AppShell> {
   int _index = 0;
   bool _warmed = false;
 
-  static final _pages = <Widget>[
-    const HomePage(),
-    const HealthSummaryPage(),
-    const DeviceControlPage(),
-    const EmergencyContactPage(),
+  final _pages = const <Widget>[
+    HomePage(),
+    HealthSummaryPage(),
+    DeviceControlPage(),
+    EmergencyContactPage(),
   ];
 
   @override
   void initState() {
     super.initState();
-    // Activity가 준비된 후(첫 프레임) 1회만 권한 트리거
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (_warmed) return;
       _warmed = true;
+
+      // 필요하면 한 번만 묻기(두 타입을 한 번에)
       try {
-        await HealthController.I.ensureConfigured();
-        await HealthController.I.requestPermsFor(const [HealthDataType.SLEEP_SESSION]);
-        await HealthController.I.requestPermsFor(const [HealthDataType.STEPS]);
-      } catch (_) {
-        // 실패해도 흐름은 계속
-      }
+        await HealthController.I.requestAllPermsIfNeeded(const [
+          HealthDataType.STEPS,
+          HealthDataType.SLEEP_SESSION,
+        ]);
+      } catch (_) {}
     });
   }
 

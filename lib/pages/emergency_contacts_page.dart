@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'contact_settings_page.dart';
-import 'phone_format.dart'; // ✅ normalizePhoneDigits / formatKoreanPhone / Formatter
+import '../phone_format.dart'; // ✅ normalizePhoneDigits / formatKoreanPhone / Formatter
 
 /// SharedPreferences 키 상수
 const _kHospitalName = 'e_hospitalName';

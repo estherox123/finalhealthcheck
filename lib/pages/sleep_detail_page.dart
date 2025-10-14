@@ -3,7 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:health/health.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'base_health_page.dart';
-import 'health_controller.dart';
+import '../controllers/health_controller.dart';
 
 class SleepDetailPage extends HealthStatefulPage {
   const SleepDetailPage({super.key});
@@ -25,8 +25,10 @@ class _SleepDetailPageState extends HealthState<SleepDetailPage> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && authorized) _loadDailySleep();
+    // 권한 초기화 완료 시점에 자동 로드
+    authReady.then((ok) {
+      if (!mounted) return;
+      if (ok) _loadDailySleep();
     });
   }
 
