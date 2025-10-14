@@ -1,4 +1,3 @@
-// lib/pages/device_control_page.dart
 import 'package:flutter/material.dart';
 
 import '../data/iot/device_control_controller.dart';
@@ -32,33 +31,30 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
 
   @override
   Widget build(BuildContext context) {
-    final snap = _c.snapshot; // IotSnapshot?
-    final loading = snap == null;
+    final snap = _c.snapshot;
+    final loading = _c.status != IotStatus.ready;
 
     return Scaffold(
       appBar: AppBar(title: const Text('기기 제어')),
       body: RefreshIndicator(
-        // 컨트롤러에 refresh가 없다 했으니 init()을 재호출해 재로딩
         onRefresh: () => _c.init(),
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
           children: [
-            // ============ 에어컨 (AcMode/컨트롤러 시그니처에 맞춤) ============
             _SectionTitle('에어컨'),
             _AirconCard(
-              state: snap?.aircon,                   // AcState?
-              onToggle: () => _c.toggleAc(),
-              onTempDelta: (d) => _c.acTempDelta(d), // int delta
-              onSetMode: (m) => _c.setAcMode(m),     // AcMode
-              onSetTimer: (h) => _c.setAcTimer(h),   // int hours(0,1,2,4)
+              state: snap.aircon,
+              onToggle: _c.toggleAc,
+              onTempDelta: _c.acTempDelta,
+              onSetMode: _c.setAcMode,
+              onSetTimer: _c.setAcTimer,
               loading: loading,
             ),
             const SizedBox(height: 16),
 
-            // ============ 전동 블라인드 (setBlinds + 단순 상태) ============
             _SectionTitle('전동 블라인드'),
             _BlindsCard(
-              status: snap?.blinds, // BlindsStatus? (open/close/stop 중 하나)
+              status: snap.blinds,
               onOpen: () => _c.setBlinds(BlindsStatus.open),
               onStop: () => _c.setBlinds(BlindsStatus.stop),
               onClose: () => _c.setBlinds(BlindsStatus.close),
@@ -66,13 +62,12 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
             ),
             const SizedBox(height: 16),
 
-            // ============ 조명(방별 큰 카드: 거실/침실/주방) ===============
             _SectionTitle('조명'),
-            _LightsRow(
+            _LightsColumn(
               rooms: const ['거실', '침실', '주방'],
               snapshot: snap,
-              onToggle: (room) => _c.toggleLight(room),
-              onBrightness: (room, b) => _c.setBrightness(room, b),
+              onToggle: _c.toggleLight,
+              onBrightness: _c.setBrightness,
               loading: loading,
             ),
           ],
@@ -89,18 +84,20 @@ class _SectionTitle extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.only(bottom: 8),
-    child: Text(text,
-        style: Theme.of(context)
-            .textTheme
-            .titleLarge
-            ?.copyWith(fontWeight: FontWeight.w800)),
+    child: Text(
+      text,
+      style: Theme.of(context)
+          .textTheme
+          .titleLarge
+          ?.copyWith(fontWeight: FontWeight.w800),
+    ),
   );
 }
 
 /* ================================ 에어컨 ================================ */
 
 class _AirconCard extends StatelessWidget {
-  final dynamic state;
+  final AirconState state;
   final VoidCallback onToggle;
   final void Function(int delta) onTempDelta;
   final void Function(AcMode mode) onSetMode;
@@ -118,10 +115,10 @@ class _AirconCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bool on   = (state?.isOn as bool?) ?? false;
-    final int  temp = (state?.temperature as int?) ?? 24;
-    final AcMode mode = (state?.mode as AcMode?) ?? AcMode.cool;
-    final int  timer  = (state?.timerHours as int?) ?? 0;
+    final bool on = state.isOn;
+    final int temp = state.temperature;
+    final AcMode mode = state.mode;
+    final int timer = state.timerHours;
 
     return _Card(
       color: Colors.blue,
@@ -140,7 +137,7 @@ class _AirconCard extends StatelessWidget {
             ),
           ),
           AnimatedSwitcher(
-            duration: const Duration(milliseconds: 200),
+            duration: const Duration(milliseconds: 180),
             child: on
                 ? Column(
               key: const ValueKey('ac-on'),
@@ -156,8 +153,7 @@ class _AirconCard extends StatelessWidget {
                 _ModeChips<AcMode>(
                   label: '모드',
                   value: mode,
-                  // const로 박으면 “맵 키는 상수여야” 오류가 날 수 있어요 → 일반 Map 사용
-                  items: {
+                  items: const {
                     AcMode.cool: '냉방',
                     AcMode.heat: '난방',
                     AcMode.fan: '송풍',
@@ -165,8 +161,8 @@ class _AirconCard extends StatelessWidget {
                   onSelected: loading ? null : onSetMode,
                 ),
                 const SizedBox(height: 12),
-                _TimerChips(
-                  value: timer,                  // 0/1/2/4
+                _TimerGrid2x2(
+                  value: timer, // 0/1/2/4
                   onSelected: loading ? null : onSetTimer,
                   color: Colors.blue,
                 ),
@@ -180,10 +176,65 @@ class _AirconCard extends StatelessWidget {
   }
 }
 
+/* ===== 타이머 2x2 그리드 (해제 / 1시간 / 2시간 / 4시간) – 글자 줄바꿈 방지 ===== */
+
+class _TimerGrid2x2 extends StatelessWidget {
+  final int value; // 0/1/2/4
+  final void Function(int v)? onSelected;
+  final Color color;
+  const _TimerGrid2x2({
+    required this.value,
+    required this.onSelected,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const items = [0, 1, 2, 4];
+    return LayoutBuilder(builder: (context, c) {
+      // 버튼 높이/패딩을 가로폭에 맞춰 살짝 보정
+      final double w = c.maxWidth;
+      final double h = w < 300 ? 44 : 50;
+      final padV = w < 300 ? 10.0 : 12.0;
+
+      return SizedBox(
+        height: h * 2 + 8, // 두 줄 + 간격
+        child: GridView.count(
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisCount: 2,
+          mainAxisSpacing: 8,
+          crossAxisSpacing: 8,
+          childAspectRatio: (w / 2 - 8) / h,
+          children: items.map((hVal) {
+            final sel = hVal == value;
+            return ElevatedButton(
+              onPressed: onSelected == null ? null : () => onSelected!(hVal),
+              style: ElevatedButton.styleFrom(
+                elevation: 0,
+                padding: EdgeInsets.symmetric(vertical: padV),
+                backgroundColor: sel ? color : Colors.grey.shade200,
+                foregroundColor: sel ? Colors.white : Colors.grey.shade800,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                textStyle: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(hVal == 0 ? '해제' : '${hVal}시간'),
+              ),
+            );
+          }).toList(),
+        ),
+      );
+    });
+  }
+}
+
 /* ============================ 전동 블라인드 ============================ */
 
 class _BlindsCard extends StatelessWidget {
-  final BlindsStatus? status; // open/close/stop 중 하나
+  final BlindsStatus status;
   final VoidCallback onOpen;
   final VoidCallback onStop;
   final VoidCallback onClose;
@@ -211,7 +262,6 @@ class _BlindsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final s = status ?? BlindsStatus.stop;
     final color = Colors.amber;
 
     return _Card(
@@ -226,14 +276,13 @@ class _BlindsCard extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            '현재 상태: ${_label(s)}',
+            '현재 상태: ${_label(status)}',
             style: Theme.of(context)
                 .textTheme
                 .bodyMedium
                 ?.copyWith(color: Colors.grey[700], fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 10),
-          // 큰 3버튼(열기/정지/닫기) – 직관 위주
           Row(
             children: [
               Expanded(
@@ -272,14 +321,15 @@ class _BlindsCard extends StatelessWidget {
 
 /* ================================ 조명 ================================ */
 
-class _LightsRow extends StatelessWidget {
+/// 방마다 “개별 카드”를 세로로 배치해, 꺼짐일 때는 매우 얇고 켜짐에서만 확장.
+class _LightsColumn extends StatelessWidget {
   final List<String> rooms;
-  final IotSnapshot? snapshot;
+  final IotSnapshot snapshot;
   final void Function(String room) onToggle;
   final void Function(String room, BrightnessLevel b) onBrightness;
   final bool loading;
 
-  const _LightsRow({
+  const _LightsColumn({
     required this.rooms,
     required this.snapshot,
     required this.onToggle,
@@ -289,68 +339,82 @@ class _LightsRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, c) {
-      final w = c.maxWidth;
-      final cross = w < 420 ? 1 : (w < 680 ? 2 : 3);
+    return Column(
+      children: [
+        for (final room in rooms) ...[
+          _LightCard(
+            room: room,
+            state: snapshot.lights[room] ??
+                const LightRoomState(isOn: false, brightness: BrightnessLevel.normal),
+            onToggle: () => onToggle(room),
+            onBrightness: (b) => onBrightness(room, b),
+            loading: loading,
+          ),
+          const SizedBox(height: 12),
+        ]
+      ],
+    );
+  }
+}
 
-      return GridView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        itemCount: rooms.length,
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: cross,
-          crossAxisSpacing: 12,
-          mainAxisSpacing: 12,
-          childAspectRatio: 1.05,
-        ),
-        itemBuilder: (_, i) {
-          final room = rooms[i];
-          final LightRoomState? s = snapshot?.lights[room];
-          final on = s?.isOn ?? false;
-          final b = s?.brightness ?? BrightnessLevel.normal;
+class _LightCard extends StatelessWidget {
+  final String room;
+  final LightRoomState state;
+  final VoidCallback onToggle;
+  final void Function(BrightnessLevel b) onBrightness;
+  final bool loading;
 
-          return _Card(
+  const _LightCard({
+    required this.room,
+    required this.state,
+    required this.onToggle,
+    required this.onBrightness,
+    required this.loading,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final on = state.isOn;
+    final b = state.brightness;
+
+    return _Card(
+      color: Colors.orange,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _HeaderRow(
+            icon: Icons.lightbulb_outline,
             color: Colors.orange,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _HeaderRow(
-                  icon: Icons.lightbulb_outline,
-                  color: Colors.orange,
-                  title: room,
-                  trailing: _PrimaryButton(
-                    label: on ? '켜짐' : '꺼짐',
-                    onPressed: loading ? null : () => onToggle(room),
-                    active: on,
-                    color: Colors.orange,
-                  ),
-                ),
-                AnimatedCrossFade(
-                  crossFadeState:
-                  on ? CrossFadeState.showSecond : CrossFadeState.showFirst,
-                  duration: const Duration(milliseconds: 180),
-                  firstChild: const SizedBox(height: 4),
-                  secondChild: Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: _ModeChips<BrightnessLevel>(
-                      label: '밝기',
-                      value: b,
-                      items: {
-                        BrightnessLevel.dim: '어둡게',
-                        BrightnessLevel.normal: '보통',
-                        BrightnessLevel.bright: '밝게',
-                      },
-                      onSelected:
-                      loading ? null : (v) => onBrightness(room, v),
-                    ),
-                  ),
-                ),
-              ],
+            title: room,
+            trailing: _PrimaryButton(
+              label: on ? '켜짐' : '꺼짐',
+              onPressed: loading ? null : onToggle,
+              active: on,
+              color: Colors.orange,
             ),
-          );
-        },
-      );
-    });
+          ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            child: on
+                ? Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: _ModeChips<BrightnessLevel>(
+                label: '밝기',
+                value: b,
+                items: const {
+                  BrightnessLevel.dim: '어둡게',
+                  BrightnessLevel.normal: '보통',
+                  BrightnessLevel.bright: '밝게',
+                },
+                onSelected: loading ? null : onBrightness,
+              ),
+            )
+                : const SizedBox(height: 0),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -418,9 +482,8 @@ class _PrimaryButton extends StatelessWidget {
       elevation: 0,
       backgroundColor: active ? color : Colors.grey.shade200,
       foregroundColor: active ? Colors.white : Colors.grey.shade700,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      shape:
-      RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       textStyle: const TextStyle(fontWeight: FontWeight.w700),
     ),
     child: Text(label),
@@ -443,11 +506,13 @@ class _TempControlRow extends StatelessWidget {
       Expanded(
         child: FittedBox(
           fit: BoxFit.scaleDown,
-          child: Text('$temp°C',
-              style: Theme.of(context)
-                  .textTheme
-                  .displaySmall
-                  ?.copyWith(fontWeight: FontWeight.w800, color: color)),
+          child: Text(
+            '$temp°C',
+            style: Theme.of(context)
+                .textTheme
+                .displaySmall
+                ?.copyWith(fontWeight: FontWeight.w800, color: color),
+          ),
         ),
       ),
       const SizedBox(width: 10),
@@ -480,7 +545,7 @@ class _RoundIconBtn extends StatelessWidget {
 class _ModeChips<T> extends StatelessWidget {
   final String label;
   final T value;
-  final Map<T, String> items;           // const 강제 X (상수 오류 방지)
+  final Map<T, String> items;
   final void Function(T v)? onSelected;
   const _ModeChips({
     required this.label,
@@ -493,11 +558,11 @@ class _ModeChips<T> extends StatelessWidget {
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(label,
-          style: Theme.of(context)
-              .textTheme
-              .bodyMedium
-              ?.copyWith(color: Colors.grey[700])),
+      Text(
+        label,
+        style:
+        Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey[700]),
+      ),
       const SizedBox(height: 6),
       Wrap(
         spacing: 8,
@@ -521,47 +586,6 @@ class _ModeChips<T> extends StatelessWidget {
   );
 }
 
-class _TimerChips extends StatelessWidget {
-  final int value; // 0/1/2/4
-  final void Function(int v)? onSelected;
-  final Color color;
-  const _TimerChips({required this.value, required this.onSelected, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    final items = [0, 1, 2, 4];
-    return LayoutBuilder(builder: (context, c) {
-      // 버튼이 세로로 꺾이지 않게 폭/패딩 자동조정
-      final isTight = c.maxWidth < 320;
-      final btnPad = EdgeInsets.symmetric(
-        horizontal: isTight ? 10 : 14,
-        vertical: isTight ? 10 : 12,
-      );
-
-      return Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: items.map((h) {
-          final sel = h == value;
-          return ElevatedButton(
-            onPressed: onSelected == null ? null : () => onSelected!(h),
-            style: ElevatedButton.styleFrom(
-              elevation: 0,
-              padding: btnPad,
-              shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              backgroundColor: sel ? color : Colors.grey.shade200,
-              foregroundColor: sel ? Colors.white : Colors.grey.shade800,
-              textStyle: const TextStyle(fontWeight: FontWeight.w700),
-            ),
-            child: Text(h == 0 ? '해제' : '${h}시간'),
-          );
-        }).toList(),
-      );
-    });
-  }
-}
-
 class _BigAction extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -580,8 +604,7 @@ class _BigAction extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 14),
       backgroundColor: color.withOpacity(.12),
       foregroundColor: color,
-      shape:
-      RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       textStyle: const TextStyle(fontWeight: FontWeight.w800),
     ),
   );
