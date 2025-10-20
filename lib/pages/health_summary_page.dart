@@ -7,6 +7,9 @@ import 'package:health/health.dart';
 import 'steps_page.dart';
 import 'sleep_detail_page.dart';
 import 'base_health_page.dart';
+import '../ui/typography_helpers.dart';
+
+/// 건강 요약 페이지'
 
 /// 날짜 범위
 enum SummaryRange { today, week, month }
@@ -364,10 +367,10 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               subtitle: _range == SummaryRange.today
                   ? (d.stepsToday == null
                   ? '기록 없음'
-                  : '오늘 ${_fmtSteps(d.stepsToday!)} 걸음')
+                  : '${_fmtSteps(d.stepsToday!)} 걸음')
                   : (d.stepsAvg == null
                   ? '기록 없음'
-                  : '평균 ${_fmtSteps(d.stepsAvg!)}'),
+                  : '평균 ${_fmtSteps(d.stepsAvg!)} 걸음'),
               status: _gradeToStatus(d.stepsGrade ?? 1),
               trend: d.stepsTrend ?? 0,
               icon: Icons.directions_walk,
@@ -386,7 +389,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               subtitle: _range == SummaryRange.today
                   ? (d.sleepYesterday == null
                   ? '기록 없음'
-                  : '어젯밤 ${_fmtDur(d.sleepYesterday!)}')
+                  : '${_fmtDur(d.sleepYesterday!)}')
                   : (d.sleepAvg == null
                   ? '기록 없음'
                   : '평균 ${_fmtDur(d.sleepAvg!)}'),
@@ -405,7 +408,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             _SectionTitle('바이탈'),
             _SummaryTile(
               title: '심박수(+HRV)',
-              subtitle: 'HR ${d.hrAvg} bpm · HRV ${d.hrvRmssd} ms',
+              subtitle: 'HR ${d.hrAvg} bpm\nHRV ${d.hrvRmssd} ms',
               status: _gradeToStatus(d.hrGrade),
               trend: d.hrvTrend,
               icon: Icons.monitor_heart_outlined,
@@ -421,7 +424,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             _SectionTitle('진단/계측'),
             _SummaryTile(
               title: '혈압',
-              subtitle: '최근 ${d.bpSys}/${d.bpDia} mmHg',
+              subtitle: '${d.bpSys}/${d.bpDia} mmHg',
               status: _gradeToStatus(d.bpGrade),
               trend: d.bpTrend,
               icon: Icons.favorite_outline,
@@ -434,7 +437,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             const SizedBox(height: 8),
             _SummaryTile(
               title: '혈당',
-              subtitle: '식전 ${d.glucoseFasting} / 식후 ${d.glucosePost} mg/dL',
+              subtitle: '식전 ${d.glucoseFasting}\n식후 ${d.glucosePost} mg/dL',
               status: _gradeToStatus(d.glucoseGrade),
               trend: d.glucoseTrend,
               icon: Icons.bloodtype_outlined,
@@ -448,7 +451,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             _SummaryTile(
               title: '체중',
               subtitle:
-              '오늘 ${d.weight.toStringAsFixed(1)} kg · ${_deltaStr(d.weightDeltaKg)}',
+              '${d.weight.toStringAsFixed(1)} kg\n(${_deltaStr(d.weightDeltaKg)})',
               status: _gradeToStatus(d.weightGrade),
               trend: d.weightTrend,
               icon: Icons.monitor_weight_outlined,
@@ -497,7 +500,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
 /// 상태 등급
 enum _Status { good, warn, bad }
 
-/// 요약 타일
+/// 요약 타일 (오른쪽 영역 폭 고정 + 숫자만 크게)
 class _SummaryTile extends StatelessWidget {
   final String title;
   final String subtitle;
@@ -506,6 +509,10 @@ class _SummaryTile extends StatelessWidget {
   final IconData icon;
   final VoidCallback? onTap;
   final bool showTrend;
+
+  // 오른쪽(수치+화살표) 영역 고정 폭
+  static const double _trailingWidth = 180.0;
+  static const double _arrowBoxWidth = 24.0;
 
   const _SummaryTile({
     required this.title,
@@ -517,6 +524,43 @@ class _SummaryTile extends StatelessWidget {
     this.showTrend = true,
   });
 
+  // "숫자"만 잡아내기 위한 정규식
+  static final RegExp _numRe = RegExp(r'(\d[\d,]*(?:\.\d+)?)');
+
+  InlineSpan _buildSubtitleSpan(BuildContext context, String text) {
+    final base = Theme.of(context)
+        .textTheme
+        .bodyMedium
+        ?.copyWith(color: Colors.grey[800]) ??
+        const TextStyle(fontSize: 14, color: Colors.black87);
+
+    final numStyle = base.copyWith(
+      fontSize: (base.fontSize ?? 14) + 6, // ← 숫자만 +4pt
+      fontWeight: FontWeight.w800,
+      height: 1.1,
+    );
+
+    final spans = <TextSpan>[];
+    int cursor = 0;
+
+    for (final m in _numRe.allMatches(text)) {
+      // 숫자 앞의 일반 텍스트
+      if (m.start > cursor) {
+        spans.add(TextSpan(text: text.substring(cursor, m.start), style: base));
+      }
+      // 숫자 부분만 크게
+      final numTxt = m.group(0) ?? '';
+      spans.add(TextSpan(text: numTxt, style: numStyle));
+      cursor = m.end;
+    }
+    // 마지막 남은 일반 텍스트
+    if (cursor < text.length) {
+      spans.add(TextSpan(text: text.substring(cursor), style: base));
+    }
+
+    return TextSpan(children: spans);
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = switch (status) {
@@ -525,11 +569,13 @@ class _SummaryTile extends StatelessWidget {
       _Status.bad => Colors.red,
     };
     final bg = c.withOpacity(.10);
-    final arrow = trend > 0
+
+    final arrowIcon = trend > 0
         ? Icons.arrow_upward
         : trend < 0
         ? Icons.arrow_downward
         : Icons.horizontal_rule;
+
     final arrowColor =
     trend > 0 ? Colors.green : trend < 0 ? Colors.red : Colors.grey[600];
 
@@ -544,12 +590,15 @@ class _SummaryTile extends StatelessWidget {
           border: Border.all(color: c.withOpacity(.35)),
         ),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             CircleAvatar(
               backgroundColor: c.withOpacity(.18),
               child: Icon(icon, color: c),
             ),
             const SizedBox(width: 12),
+
+            // 제목
             Expanded(
               child: Text(
                 title,
@@ -560,32 +609,47 @@ class _SummaryTile extends StatelessWidget {
                     ?.copyWith(fontWeight: FontWeight.w700),
               ),
             ),
-            const SizedBox(width: 10),
-            Flexible(
-              child: Text(
-                subtitle,
-                maxLines: 2,
-                textAlign: TextAlign.right,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.grey[800]),
+
+            const SizedBox(width: 12),
+
+            // 오른쪽 고정 폭 영역(수치 + 화살표)
+            ConstrainedBox(
+              constraints: const BoxConstraints(
+                minWidth: _trailingWidth,
+                maxWidth: _trailingWidth,
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  // 수치(숫자만 크게) — 우측 정렬
+                  Expanded(
+                    child: Text.rich(
+                      _buildSubtitleSpan(context, subtitle),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+
+                  // 화살표: 표시 안 해도 공간은 유지
+                  SizedBox(
+                    width: _arrowBoxWidth,
+                    child: Opacity(
+                      opacity: showTrend ? 1.0 : 0.0,
+                      child: Icon(arrowIcon, size: 18, color: arrowColor),
+                    ),
+                  ),
+                ],
               ),
             ),
-            if (showTrend) ...[
-              const SizedBox(width: 10),
-              SizedBox(
-                width: 24,
-                child: Icon(arrow, size: 18, color: arrowColor),
-              ),
-            ],
           ],
         ),
       ),
     );
   }
 }
+
 
 /// 로딩 플레이스홀더(간단)
 class _SkeletonTile extends StatelessWidget {

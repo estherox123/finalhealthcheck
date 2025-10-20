@@ -180,7 +180,7 @@ class _StepsPageState extends HealthState<StepsPage> {
           children: [
             if (errorMsg != null)
               Text(errorMsg!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-            Text('권한: ${authorized ? "허용됨" : "미허용"}'),
+            //Text('권한: ${authorized ? "허용됨" : "미허용"}'),
             const SizedBox(height: 8),
             ElevatedButton.icon(
               onPressed: authorized && !isLoadingData ? _loadDailySteps : null,

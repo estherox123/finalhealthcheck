@@ -1,3 +1,4 @@
+// lib/pages/device_control_page.dart
 import 'package:flutter/material.dart';
 
 import '../data/iot/device_control_controller.dart';
@@ -35,7 +36,7 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
     final loading = _c.status != IotStatus.ready;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('기기 제어')),
+      appBar: AppBar(title: Text('기기 제어', style: _kr(Theme.of(context).textTheme.titleLarge))),
       body: RefreshIndicator(
         onRefresh: () => _c.init(),
         child: ListView(
@@ -77,6 +78,12 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
   }
 }
 
+/* --------------------------- 폰트 유틸(한글만 살짝 키우기) --------------------------- */
+
+const double _krScale = 1.12; // 한글 확대 배율(숫자 디스플레이는 제외)
+TextStyle? _kr(TextStyle? s, {double scale = _krScale}) =>
+    s?.copyWith(fontSize: (s.fontSize ?? 14) * scale);
+
 /* --------------------------- 공통 타이틀 --------------------------- */
 class _SectionTitle extends StatelessWidget {
   final String text;
@@ -86,10 +93,12 @@ class _SectionTitle extends StatelessWidget {
     padding: const EdgeInsets.only(bottom: 8),
     child: Text(
       text,
-      style: Theme.of(context)
-          .textTheme
-          .titleLarge
-          ?.copyWith(fontWeight: FontWeight.w800),
+      style: _kr(
+        Theme.of(context)
+            .textTheme
+            .titleLarge
+            ?.copyWith(fontWeight: FontWeight.w800),
+      ),
     ),
   );
 }
@@ -192,7 +201,6 @@ class _TimerGrid2x2 extends StatelessWidget {
   Widget build(BuildContext context) {
     const items = [0, 1, 2, 4];
     return LayoutBuilder(builder: (context, c) {
-      // 버튼 높이/패딩을 가로폭에 맞춰 살짝 보정
       final double w = c.maxWidth;
       final double h = w < 300 ? 44 : 50;
       final padV = w < 300 ? 10.0 : 12.0;
@@ -217,7 +225,7 @@ class _TimerGrid2x2 extends StatelessWidget {
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
-                textStyle: const TextStyle(fontWeight: FontWeight.w700),
+                textStyle: _kr(const TextStyle(fontWeight: FontWeight.w700)),
               ),
               child: FittedBox(
                 fit: BoxFit.scaleDown,
@@ -277,10 +285,12 @@ class _BlindsCard extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             '현재 상태: ${_label(status)}',
-            style: Theme.of(context)
-                .textTheme
-                .bodyMedium
-                ?.copyWith(color: Colors.grey[700], fontWeight: FontWeight.w600),
+            style: _kr(
+              Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: Colors.grey[700], fontWeight: FontWeight.w600),
+            ),
           ),
           const SizedBox(height: 10),
           Row(
@@ -291,6 +301,7 @@ class _BlindsCard extends StatelessWidget {
                   label: '열기',
                   color: Colors.green,
                   onPressed: loading ? null : onOpen,
+                  selected: status == BlindsStatus.open,
                 ),
               ),
               const SizedBox(width: 10),
@@ -300,6 +311,7 @@ class _BlindsCard extends StatelessWidget {
                   label: '정지',
                   color: Colors.grey,
                   onPressed: loading ? null : onStop,
+                  selected: status == BlindsStatus.stop,
                 ),
               ),
               const SizedBox(width: 10),
@@ -309,10 +321,11 @@ class _BlindsCard extends StatelessWidget {
                   label: '닫기',
                   color: Colors.red,
                   onPressed: loading ? null : onClose,
+                  selected: status == BlindsStatus.close,
                 ),
               ),
             ],
-          ),
+          )
         ],
       ),
     );
@@ -321,7 +334,6 @@ class _BlindsCard extends StatelessWidget {
 
 /* ================================ 조명 ================================ */
 
-/// 방마다 “개별 카드”를 세로로 배치해, 꺼짐일 때는 매우 얇고 켜짐에서만 확장.
 class _LightsColumn extends StatelessWidget {
   final List<String> rooms;
   final IotSnapshot snapshot;
@@ -408,6 +420,7 @@ class _LightCard extends StatelessWidget {
                   BrightnessLevel.bright: '밝게',
                 },
                 onSelected: loading ? null : onBrightness,
+                center: true, // 중앙 정렬 + 가로폭 전체 사용
               ),
             )
                 : const SizedBox(height: 0),
@@ -456,10 +469,12 @@ class _HeaderRow extends StatelessWidget {
       Expanded(
         child: Text(
           title,
-          style: Theme.of(context)
-              .textTheme
-              .titleMedium
-              ?.copyWith(fontWeight: FontWeight.w800),
+          style: _kr(
+            Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(fontWeight: FontWeight.w800),
+          ),
         ),
       ),
       if (trailing != null) trailing!,
@@ -484,7 +499,7 @@ class _PrimaryButton extends StatelessWidget {
       foregroundColor: active ? Colors.white : Colors.grey.shade700,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      textStyle: const TextStyle(fontWeight: FontWeight.w700),
+      textStyle: _kr(const TextStyle(fontWeight: FontWeight.w700)),
     ),
     child: Text(label),
   );
@@ -508,6 +523,7 @@ class _TempControlRow extends StatelessWidget {
           fit: BoxFit.scaleDown,
           child: Text(
             '$temp°C',
+            // 숫자 디스플레이 → 한글 확대 미적용
             style: Theme.of(context)
                 .textTheme
                 .displaySmall
@@ -547,43 +563,56 @@ class _ModeChips<T> extends StatelessWidget {
   final T value;
   final Map<T, String> items;
   final void Function(T v)? onSelected;
+  final bool center;
+
   const _ModeChips({
     required this.label,
     required this.value,
     required this.items,
     required this.onSelected,
+    this.center = false,
   });
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(
-        label,
-        style:
-        Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey[700]),
-      ),
-      const SizedBox(height: 6),
-      Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: items.keys.map((k) {
-          final sel = k == value;
-          return ChoiceChip(
-            label: Text(items[k]!),
-            selected: sel,
-            onSelected: onSelected == null ? null : (_) => onSelected!(k),
-            selectedColor: Theme.of(context).colorScheme.primary,
-            labelStyle: TextStyle(
-              color: sel ? Colors.white : Colors.black87,
-              fontWeight: FontWeight.w700,
-            ),
-            side: const BorderSide(color: Colors.black12),
-          );
-        }).toList(),
-      ),
-    ],
-  );
+  Widget build(BuildContext context) {
+    final wrapAlign = center ? WrapAlignment.center : WrapAlignment.start;
+
+    final labelStyle = _kr(
+      Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey[700]),
+    );
+
+    final chipTextStyle = _kr(const TextStyle(fontWeight: FontWeight.w700));
+
+    final column = Column(
+      crossAxisAlignment:
+      center ? CrossAxisAlignment.center : CrossAxisAlignment.start,
+      children: [
+        Text(label, textAlign: center ? TextAlign.center : TextAlign.start, style: labelStyle),
+        const SizedBox(height: 6),
+        Wrap(
+          alignment: wrapAlign,
+          runAlignment: wrapAlign,
+          spacing: 8,
+          runSpacing: 8,
+          children: items.keys.map((k) {
+            final sel = k == value;
+            return ChoiceChip(
+              label: Text(items[k]!, style: chipTextStyle),
+              selected: sel,
+              onSelected: onSelected == null ? null : (_) => onSelected!(k),
+              selectedColor: Theme.of(context).colorScheme.primary,
+              labelStyle: TextStyle(
+                color: sel ? Colors.white : Colors.black87,
+              ),
+              side: const BorderSide(color: Colors.black12),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+
+    return center ? SizedBox(width: double.infinity, child: column) : column;
+  }
 }
 
 class _BigAction extends StatelessWidget {
@@ -591,21 +620,40 @@ class _BigAction extends StatelessWidget {
   final String label;
   final Color color;
   final VoidCallback? onPressed;
-  const _BigAction(
-      {required this.icon, required this.label, required this.color, required this.onPressed});
+  final bool selected;
+
+  const _BigAction({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onPressed,
+    this.selected = false,
+  });
 
   @override
-  Widget build(BuildContext context) => ElevatedButton.icon(
-    onPressed: onPressed,
-    icon: Icon(icon),
-    label: Text(label),
-    style: ElevatedButton.styleFrom(
-      elevation: 0,
-      padding: const EdgeInsets.symmetric(vertical: 14),
-      backgroundColor: color.withOpacity(.12),
-      foregroundColor: color,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      textStyle: const TextStyle(fontWeight: FontWeight.w800),
-    ),
-  );
+  Widget build(BuildContext context) {
+    final Color bgBase = selected ? color : color.withOpacity(.12);
+    final Color fgBase = selected ? Colors.white : color;
+
+    return ElevatedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon),
+      label: Text(label, style: _kr(const TextStyle(fontWeight: FontWeight.w800))),
+      style: ElevatedButton.styleFrom(
+        elevation: 0,
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        backgroundColor: bgBase,
+        foregroundColor: fgBase,
+      ).merge(ButtonStyle(
+        backgroundColor: MaterialStateProperty.resolveWith((states) {
+          if (states.contains(MaterialState.pressed)) {
+            return selected ? color.withOpacity(.90) : color.withOpacity(.20);
+          }
+          return bgBase;
+        }),
+        foregroundColor: MaterialStatePropertyAll(fgBase),
+      )),
+    );
+  }
 }
