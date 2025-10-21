@@ -1,5 +1,5 @@
 // lib/pages/health_summary_page.dart
-import 'dart:math';
+import 'package:finalhealthcheck/pages/fecal_occult_blood_page.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:health/health.dart';
@@ -7,9 +7,6 @@ import 'package:health/health.dart';
 import 'steps_page.dart';
 import 'sleep_detail_page.dart';
 import 'base_health_page.dart';
-import '../ui/typography_helpers.dart';
-
-/// 건강 요약 페이지'
 
 /// 날짜 범위
 enum SummaryRange { today, week, month }
@@ -164,6 +161,31 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     }
   }
 
+  /// fecal(잠혈) 검사 주기 스케줄러
+  /// - last: 마지막 검사일(없으면 오늘-주기 로 가정하여 '지금부터 시작')
+  /// - cycleDays: 권장 주기(기본 90일)
+  /// - soonThresholdDays: 임박 경계(기본 7일)
+  ({
+  DateTime nextDueAt,
+  int daysToDue,
+  int grade, // 2 good(여유), 1 warn(임박), 0 bad(연체)
+  }) _calcFecalDue({
+    required DateTime? last,
+    int cycleDays = 90,
+    int soonThresholdDays = 7,
+  }) {
+    final today = DateTime.now();
+    final base = last ?? today; // 마지막 검사 없으면 오늘을 기준으로 시작
+    final next = DateTime(base.year, base.month, base.day).add(Duration(days: cycleDays));
+
+    final diff = next.difference(DateTime(today.year, today.month, today.day)).inDays;
+    // 등급: 연체(<0)=0, 임박(<=7)=1, 여유(>7)=2
+    final g = diff < 0 ? 0 : (diff <= soonThresholdDays ? 1 : 2);
+
+    return (nextDueAt: next, daysToDue: diff, grade: g);
+  }
+
+
   // ---------------- Load ----------------
   Future<void> _load() async {
     setState(() => _loading = true);
@@ -239,7 +261,6 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
           if (stepCnt > 0) stepsAvg = (stepSum / stepCnt).round();
 
           // 수면: 최근 N밤 평균(지난밤 포함, 결측 제외)
-          //   - 사용자가 범위를 바꿨을 때도 감각상 최근 N밤 평균이면 충분
           int sumMin = 0, cnt = 0;
           for (int i = 0; i < days; i++) {
             final anchor = today0.subtract(Duration(days: i));
@@ -255,6 +276,11 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
           if (cnt > 0) sleepAvg = Duration(minutes: (sumMin / cnt).round());
         }
       }
+
+      // ✅ 대변검사 스케줄 계산 (더미 lastTestAt: 20일 전)
+      final DateTime? fecalLastTestAt = DateTime.now().subtract(const Duration(days: 20));
+      // 권장 주기 30일, 임박 7일 기준
+      final fecalSched = _calcFecalDue(last: fecalLastTestAt, cycleDays: 30, soonThresholdDays: 7);
 
       // 더미(바이탈/계측) + 실데이터 반영
       _data = _SummaryDummy(
@@ -285,6 +311,14 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
         weightDeltaKg: 0.2,
         weightGrade: 2,
         weightTrend: 0,
+        urinalysisGrade: 2,
+        urinalysisSummary: '정상',
+        fecalLastTestAt: fecalLastTestAt,
+        fecalCycleDays: 90,
+        fecalLastResult: '잠혈 없음',           // 나중에 사용자 입력으로 갱신
+        fecalDueGrade: fecalSched.grade,       // 색상 등급
+        fecalNextDueAt: fecalSched.nextDueAt,  // 다음 검사 예정일
+        fecalDaysToDue: fecalSched.daysToDue,  // D-값
       );
     } finally {
       if (!mounted) return;
@@ -357,11 +391,9 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
                   style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
               ),
-            Text('권한: ${authorized ? "허용됨" : "미허용"}'),
-            const SizedBox(height: 12),
 
             // 활동
-            _SectionTitle('활동 요약（${rangeLabel(_range)}）'),
+            const _SectionTitle('활동 요약'),
             _SummaryTile(
               title: '활동량',
               subtitle: _range == SummaryRange.today
@@ -383,13 +415,13 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             const SizedBox(height: 8),
 
             // 수면
-            _SectionTitle('수면'),
+            const _SectionTitle('수면'),
             _SummaryTile(
               title: '수면 요약',
               subtitle: _range == SummaryRange.today
                   ? (d.sleepYesterday == null
                   ? '기록 없음'
-                  : '${_fmtDur(d.sleepYesterday!)}')
+                  : _fmtDur(d.sleepYesterday!))
                   : (d.sleepAvg == null
                   ? '기록 없음'
                   : '평균 ${_fmtDur(d.sleepAvg!)}'),
@@ -405,7 +437,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             const SizedBox(height: 8),
 
             // 바이탈 (더미)
-            _SectionTitle('바이탈'),
+            const _SectionTitle('바이탈'),
             _SummaryTile(
               title: '심박수(+HRV)',
               subtitle: 'HR ${d.hrAvg} bpm\nHRV ${d.hrvRmssd} ms',
@@ -421,7 +453,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             const SizedBox(height: 8),
 
             // 계측 (더미)
-            _SectionTitle('진단/계측'),
+            const _SectionTitle('진단/계측'),
             _SummaryTile(
               title: '혈압',
               subtitle: '${d.bpSys}/${d.bpDia} mmHg',
@@ -437,7 +469,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             const SizedBox(height: 8),
             _SummaryTile(
               title: '혈당',
-              subtitle: '식전 ${d.glucoseFasting}\n식후 ${d.glucosePost} mg/dL',
+              subtitle: '식전 ${d.glucoseFasting} mg/dL\n식후 ${d.glucosePost} mg/dL',
               status: _gradeToStatus(d.glucoseGrade),
               trend: d.glucoseTrend,
               icon: Icons.bloodtype_outlined,
@@ -450,8 +482,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             const SizedBox(height: 8),
             _SummaryTile(
               title: '체중',
-              subtitle:
-              '${d.weight.toStringAsFixed(1)} kg\n(${_deltaStr(d.weightDeltaKg)})',
+              subtitle: d.weight.toStringAsFixed(1) + ' kg',
               status: _gradeToStatus(d.weightGrade),
               trend: d.weightTrend,
               icon: Icons.monitor_weight_outlined,
@@ -461,6 +492,47 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
                 MaterialPageRoute(builder: (_) => const _WipPage(title: '체중')),
               ),
             ),
+            const SizedBox(height: 8),
+
+            // 소변 검사
+            _SectionTitle('소변/대변 검사'),
+            _SummaryTile(
+              title: '소변검사',
+              subtitle: d.urinalysisSummary,             // 문자열 요약
+              status: _gradeToStatus(d.urinalysisGrade), // 색상 반영
+              trend: 0,
+              icon: Icons.science_outlined,
+              showTrend: false,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const _WipPage(title: '소변검사')),
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // 대변검사(잠혈) - 주기/예정 안내형
+            _SummaryTile(
+              title: '대변검사(잠혈)',
+              // 예: "다음 검사: 3/12 (D-5)\n마지막 결과: 잠혈 없음"
+              subtitle: () {
+                final next = d.fecalNextDueAt;
+                final df = DateFormat('M/d');
+                final dDay = d.fecalDaysToDue; // 음수면 D+ (연체)
+                final lastResult = d.fecalLastResult;
+                return '다음 검사까지:\n$dDay일';
+              }(),
+              status: _gradeToStatus(d.fecalDueGrade), // 여유/임박/연체 → 초록/노랑/빨강
+              trend: 0,
+              icon: Icons.event_repeat_outlined,
+              showTrend: false,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const FecalOccultBloodPage(),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
 
             const SizedBox(height: 16),
             Text(
@@ -479,6 +551,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
 
   // ---------- 표현 유틸 ----------
   static String _fmtSteps(int v) => NumberFormat('#,###').format(v);
+
   static String _fmtDur(Duration d) {
     final h = d.inMinutes ~/ 60;
     final m = d.inMinutes % 60;
@@ -511,7 +584,7 @@ class _SummaryTile extends StatelessWidget {
   final bool showTrend;
 
   // 오른쪽(수치+화살표) 영역 고정 폭
-  static const double _trailingWidth = 180.0;
+  static const double _trailingWidth = 160.0;
   static const double _arrowBoxWidth = 24.0;
 
   const _SummaryTile({
@@ -524,40 +597,37 @@ class _SummaryTile extends StatelessWidget {
     this.showTrend = true,
   });
 
-  // "숫자"만 잡아내기 위한 정규식
+  // 숫자만 크게 만들기 위한 정규식
   static final RegExp _numRe = RegExp(r'(\d[\d,]*(?:\.\d+)?)');
 
   InlineSpan _buildSubtitleSpan(BuildContext context, String text) {
-    final base = Theme.of(context)
-        .textTheme
-        .bodyMedium
-        ?.copyWith(color: Colors.grey[800]) ??
-        const TextStyle(fontSize: 14, color: Colors.black87);
+    final base = Theme.of(context).textTheme.bodyMedium?.copyWith(
+      color: Colors.grey[800],
+      fontSize: 15,
+    ) ??
+        const TextStyle(fontSize: 18, color: Colors.black87);
 
     final numStyle = base.copyWith(
-      fontSize: (base.fontSize ?? 14) + 6, // ← 숫자만 +4pt
+      fontSize: (base.fontSize ?? 17) + 6, // 숫자만 +6pt
       fontWeight: FontWeight.w800,
       height: 1.1,
+      letterSpacing: -0.2,
     );
 
     final spans = <TextSpan>[];
     int cursor = 0;
 
     for (final m in _numRe.allMatches(text)) {
-      // 숫자 앞의 일반 텍스트
       if (m.start > cursor) {
         spans.add(TextSpan(text: text.substring(cursor, m.start), style: base));
       }
-      // 숫자 부분만 크게
       final numTxt = m.group(0) ?? '';
       spans.add(TextSpan(text: numTxt, style: numStyle));
       cursor = m.end;
     }
-    // 마지막 남은 일반 텍스트
     if (cursor < text.length) {
       spans.add(TextSpan(text: text.substring(cursor), style: base));
     }
-
     return TextSpan(children: spans);
   }
 
@@ -570,14 +640,10 @@ class _SummaryTile extends StatelessWidget {
     };
     final bg = c.withOpacity(.10);
 
-    final arrowIcon = trend > 0
-        ? Icons.arrow_upward
-        : trend < 0
-        ? Icons.arrow_downward
-        : Icons.horizontal_rule;
-
+    final arrowIcon =
+    trend > 0 ? Icons.arrow_upward : (trend < 0 ? Icons.arrow_downward : Icons.horizontal_rule);
     final arrowColor =
-    trend > 0 ? Colors.green : trend < 0 ? Colors.red : Colors.grey[600];
+    trend > 0 ? Colors.green : (trend < 0 ? Colors.red : Colors.grey[600]);
 
     return InkWell(
       onTap: onTap,
@@ -598,15 +664,16 @@ class _SummaryTile extends StatelessWidget {
             ),
             const SizedBox(width: 12),
 
-            // 제목
+            // 제목(한글 큼/굵게)
             Expanded(
               child: Text(
                 title,
                 maxLines: 2,
-                style: Theme.of(context)
-                    .textTheme
-                    .titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w700),
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 18,
+                  letterSpacing: -0.2,
+                ),
               ),
             ),
 
@@ -632,7 +699,7 @@ class _SummaryTile extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
 
-                  // 화살표: 표시 안 해도 공간은 유지
+                  // 화살표: 표시 안 해도 공간은 유지(레이아웃 안정)
                   SizedBox(
                     width: _arrowBoxWidth,
                     child: Opacity(
@@ -649,7 +716,6 @@ class _SummaryTile extends StatelessWidget {
     );
   }
 }
-
 
 /// 로딩 플레이스홀더(간단)
 class _SkeletonTile extends StatelessWidget {
@@ -703,6 +769,16 @@ class _SummaryDummy {
   final int weightGrade;
   final int weightTrend;
 
+  // 소변/대변 검사 요약
+  final int urinalysisGrade;         // 0/1/2 (빨/노/초)
+  final String urinalysisSummary;    // 예: '정상 (모든 항목 음성)'
+  final DateTime? fecalLastTestAt;     // 마지막 검사일 (사용자 기록)
+  final int fecalCycleDays;            // 권장 검사 주기 (예: 90일)
+  final String fecalLastResult;        // 최근 결과 요약 (예: '잠혈 없음' / '잠혈 의심')
+  final int fecalDueGrade;             // 2:정상(여유), 1:임박, 0:연체  → 색상에 사용
+  final DateTime fecalNextDueAt;       // 다음 권장 검사일
+  final int fecalDaysToDue;            // D-값 (음수면 연체)
+
   const _SummaryDummy({
     required this.stepsToday,
     required this.stepsAvg,
@@ -728,10 +804,18 @@ class _SummaryDummy {
     required this.weightDeltaKg,
     required this.weightGrade,
     required this.weightTrend,
+    required this.urinalysisGrade,
+    required this.urinalysisSummary,
+    required this.fecalLastTestAt,
+    required this.fecalCycleDays,
+    required this.fecalLastResult,
+    required this.fecalDueGrade,
+    required this.fecalNextDueAt,
+    required this.fecalDaysToDue,
   });
 }
 
-/// 섹션 제목
+/// 섹션 제목(한글 더 굵고 크게)
 class _SectionTitle extends StatelessWidget {
   final String text;
   const _SectionTitle(this.text, {super.key});
@@ -741,10 +825,10 @@ class _SectionTitle extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 6),
       child: Text(
         text,
-        style: Theme.of(context)
-            .textTheme
-            .titleLarge
-            ?.copyWith(fontWeight: FontWeight.w800),
+        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+          fontWeight: FontWeight.w900,
+          letterSpacing: -0.2,
+        ),
       ),
     );
   }

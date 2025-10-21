@@ -36,12 +36,13 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
     final loading = _c.status != IotStatus.ready;
 
     return Scaffold(
-      appBar: AppBar(title: Text('기기 제어', style: _kr(Theme.of(context).textTheme.titleLarge))),
+      appBar: AppBar(title: const Text('기기 제어')),
       body: RefreshIndicator(
         onRefresh: () => _c.init(),
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
           children: [
+            // ================= 에어컨 =================
             _SectionTitle('에어컨'),
             _AirconCard(
               state: snap.aircon,
@@ -53,6 +54,17 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
             ),
             const SizedBox(height: 16),
 
+            // ========== 환기(무덕트, 에어패스) ==========
+            // ※ 백엔드 변경 없이 기존 HRV on/off 상태 재사용
+            _SectionTitle('환기'),
+            _AirpassCard(
+              isOn: snap.hrv.isOn,
+              onToggle: _c.toggleHrv,
+              loading: loading,
+            ),
+            const SizedBox(height: 16),
+
+            // ================= 블라인드 =================
             _SectionTitle('전동 블라인드'),
             _BlindsCard(
               status: snap.blinds,
@@ -63,6 +75,7 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
             ),
             const SizedBox(height: 16),
 
+            // ================== 조명 ===================
             _SectionTitle('조명'),
             _LightsColumn(
               rooms: const ['거실', '침실', '주방'],
@@ -78,12 +91,6 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
   }
 }
 
-/* --------------------------- 폰트 유틸(한글만 살짝 키우기) --------------------------- */
-
-const double _krScale = 1.12; // 한글 확대 배율(숫자 디스플레이는 제외)
-TextStyle? _kr(TextStyle? s, {double scale = _krScale}) =>
-    s?.copyWith(fontSize: (s.fontSize ?? 14) * scale);
-
 /* --------------------------- 공통 타이틀 --------------------------- */
 class _SectionTitle extends StatelessWidget {
   final String text;
@@ -93,12 +100,10 @@ class _SectionTitle extends StatelessWidget {
     padding: const EdgeInsets.only(bottom: 8),
     child: Text(
       text,
-      style: _kr(
-        Theme.of(context)
-            .textTheme
-            .titleLarge
-            ?.copyWith(fontWeight: FontWeight.w800),
-      ),
+      style: Theme.of(context)
+          .textTheme
+          .titleLarge
+          ?.copyWith(fontWeight: FontWeight.w800),
     ),
   );
 }
@@ -185,7 +190,7 @@ class _AirconCard extends StatelessWidget {
   }
 }
 
-/* ===== 타이머 2x2 그리드 (해제 / 1시간 / 2시간 / 4시간) – 글자 줄바꿈 방지 ===== */
+/* ===== 타이머 2x2 그리드 (해제 / 1시간 / 2시간 / 4시간) ===== */
 
 class _TimerGrid2x2 extends StatelessWidget {
   final int value; // 0/1/2/4
@@ -206,7 +211,7 @@ class _TimerGrid2x2 extends StatelessWidget {
       final padV = w < 300 ? 10.0 : 12.0;
 
       return SizedBox(
-        height: h * 2 + 8, // 두 줄 + 간격
+        height: h * 2 + 8,
         child: GridView.count(
           physics: const NeverScrollableScrollPhysics(),
           crossAxisCount: 2,
@@ -225,7 +230,7 @@ class _TimerGrid2x2 extends StatelessWidget {
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
-                textStyle: _kr(const TextStyle(fontWeight: FontWeight.w700)),
+                textStyle: const TextStyle(fontWeight: FontWeight.w700),
               ),
               child: FittedBox(
                 fit: BoxFit.scaleDown,
@@ -238,6 +243,86 @@ class _TimerGrid2x2 extends StatelessWidget {
     });
   }
 }
+
+/* ======================= 환기(무덕트: 에어패스) ======================= */
+
+class _AirpassCard extends StatelessWidget {
+  final bool isOn;
+  final VoidCallback onToggle;
+  final bool loading;
+
+  const _AirpassCard({
+    required this.isOn,
+    required this.onToggle,
+    required this.loading,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Colors.teal;
+
+    return _Card(
+      color: color,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _HeaderRow(
+            icon: Icons.air_outlined,
+            color: color,
+            title: '환기(무덕트)',
+            trailing: _PrimaryButton(
+              label: isOn ? '켜짐' : '꺼짐',
+              onPressed: loading ? null : onToggle,
+              active: isOn,
+              color: color,
+            ),
+          ),
+
+          AnimatedSize(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            child: isOn
+                ? Column(
+              children: [
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: loading ? null : onToggle,
+                    style: ElevatedButton.styleFrom(
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      backgroundColor: color,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      textStyle: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 18,
+                      ),
+                    ),
+                    child: const Text('가동 중'),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '신선한 공기 순환 중',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyMedium
+                      ?.copyWith(color: Colors.grey[700]),
+                ),
+              ],
+            )
+                : const SizedBox.shrink(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 
 /* ============================ 전동 블라인드 ============================ */
 
@@ -285,12 +370,10 @@ class _BlindsCard extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             '현재 상태: ${_label(status)}',
-            style: _kr(
-              Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(color: Colors.grey[700], fontWeight: FontWeight.w600),
-            ),
+            style: Theme.of(context)
+                .textTheme
+                .bodyMedium
+                ?.copyWith(color: Colors.grey[700], fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 10),
           Row(
@@ -357,7 +440,8 @@ class _LightsColumn extends StatelessWidget {
           _LightCard(
             room: room,
             state: snapshot.lights[room] ??
-                const LightRoomState(isOn: false, brightness: BrightnessLevel.normal),
+                const LightRoomState(
+                    isOn: false, brightness: BrightnessLevel.normal),
             onToggle: () => onToggle(room),
             onBrightness: (b) => onBrightness(room, b),
             loading: loading,
@@ -420,7 +504,7 @@ class _LightCard extends StatelessWidget {
                   BrightnessLevel.bright: '밝게',
                 },
                 onSelected: loading ? null : onBrightness,
-                center: true, // 중앙 정렬 + 가로폭 전체 사용
+                center: true,
               ),
             )
                 : const SizedBox(height: 0),
@@ -469,12 +553,10 @@ class _HeaderRow extends StatelessWidget {
       Expanded(
         child: Text(
           title,
-          style: _kr(
-            Theme.of(context)
-                .textTheme
-                .titleMedium
-                ?.copyWith(fontWeight: FontWeight.w800),
-          ),
+          style: Theme.of(context)
+              .textTheme
+              .titleMedium
+              ?.copyWith(fontWeight: FontWeight.w700, fontSize: 18),
         ),
       ),
       if (trailing != null) trailing!,
@@ -488,7 +570,10 @@ class _PrimaryButton extends StatelessWidget {
   final bool active;
   final Color color;
   const _PrimaryButton(
-      {required this.label, required this.onPressed, required this.active, required this.color});
+      {required this.label,
+        required this.onPressed,
+        required this.active,
+        required this.color});
 
   @override
   Widget build(BuildContext context) => ElevatedButton(
@@ -498,8 +583,9 @@ class _PrimaryButton extends StatelessWidget {
       backgroundColor: active ? color : Colors.grey.shade200,
       foregroundColor: active ? Colors.white : Colors.grey.shade700,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      textStyle: _kr(const TextStyle(fontWeight: FontWeight.w700)),
+      shape:
+      RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      textStyle: const TextStyle(fontWeight: FontWeight.w700),
     ),
     child: Text(label),
   );
@@ -523,7 +609,6 @@ class _TempControlRow extends StatelessWidget {
           fit: BoxFit.scaleDown,
           child: Text(
             '$temp°C',
-            // 숫자 디스플레이 → 한글 확대 미적용
             style: Theme.of(context)
                 .textTheme
                 .displaySmall
@@ -577,17 +662,18 @@ class _ModeChips<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final wrapAlign = center ? WrapAlignment.center : WrapAlignment.start;
 
-    final labelStyle = _kr(
-      Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey[700]),
-    );
-
-    final chipTextStyle = _kr(const TextStyle(fontWeight: FontWeight.w700));
-
     final column = Column(
       crossAxisAlignment:
       center ? CrossAxisAlignment.center : CrossAxisAlignment.start,
       children: [
-        Text(label, textAlign: center ? TextAlign.center : TextAlign.start, style: labelStyle),
+        Text(
+          label,
+          textAlign: center ? TextAlign.center : TextAlign.start,
+          style: Theme.of(context)
+              .textTheme
+              .bodyMedium
+              ?.copyWith(color: Colors.grey[700]),
+        ),
         const SizedBox(height: 6),
         Wrap(
           alignment: wrapAlign,
@@ -597,12 +683,13 @@ class _ModeChips<T> extends StatelessWidget {
           children: items.keys.map((k) {
             final sel = k == value;
             return ChoiceChip(
-              label: Text(items[k]!, style: chipTextStyle),
+              label: Text(items[k]!),
               selected: sel,
               onSelected: onSelected == null ? null : (_) => onSelected!(k),
               selectedColor: Theme.of(context).colorScheme.primary,
               labelStyle: TextStyle(
                 color: sel ? Colors.white : Colors.black87,
+                fontWeight: FontWeight.w700,
               ),
               side: const BorderSide(color: Colors.black12),
             );
@@ -622,13 +709,12 @@ class _BigAction extends StatelessWidget {
   final VoidCallback? onPressed;
   final bool selected;
 
-  const _BigAction({
-    required this.icon,
-    required this.label,
-    required this.color,
-    required this.onPressed,
-    this.selected = false,
-  });
+  const _BigAction(
+      {required this.icon,
+        required this.label,
+        required this.color,
+        required this.onPressed,
+        this.selected = false});
 
   @override
   Widget build(BuildContext context) {
@@ -638,22 +724,25 @@ class _BigAction extends StatelessWidget {
     return ElevatedButton.icon(
       onPressed: onPressed,
       icon: Icon(icon),
-      label: Text(label, style: _kr(const TextStyle(fontWeight: FontWeight.w800))),
+      label: Text(label),
       style: ElevatedButton.styleFrom(
         elevation: 0,
         padding: const EdgeInsets.symmetric(vertical: 14),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         backgroundColor: bgBase,
         foregroundColor: fgBase,
-      ).merge(ButtonStyle(
-        backgroundColor: MaterialStateProperty.resolveWith((states) {
-          if (states.contains(MaterialState.pressed)) {
-            return selected ? color.withOpacity(.90) : color.withOpacity(.20);
-          }
-          return bgBase;
-        }),
-        foregroundColor: MaterialStatePropertyAll(fgBase),
-      )),
+        textStyle: const TextStyle(fontWeight: FontWeight.w800),
+      ).merge(
+        ButtonStyle(
+          backgroundColor: MaterialStateProperty.resolveWith((states) {
+            if (states.contains(MaterialState.pressed)) {
+              return selected ? color.withOpacity(.90) : color.withOpacity(.20);
+            }
+            return bgBase;
+          }),
+          foregroundColor: MaterialStatePropertyAll(fgBase),
+        ),
+      ),
     );
   }
 }
