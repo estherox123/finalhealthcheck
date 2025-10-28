@@ -5,6 +5,7 @@ import 'pages/home_page.dart';
 import 'pages/health_summary_page.dart';
 import 'pages/device_control_page.dart';
 import 'pages/emergency_contacts_page.dart';
+import 'services/reminder_service.dart';
 import 'package:health/health.dart';
 
 class AppShell extends StatefulWidget {
@@ -13,7 +14,7 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   int _index = 0;
   bool _warmed = false;
 
@@ -27,6 +28,7 @@ class _AppShellState extends State<AppShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (_warmed) return;
       _warmed = true;
@@ -39,6 +41,20 @@ class _AppShellState extends State<AppShell> {
         ]);
       } catch (_) {}
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Check for due reminders when app comes to foreground
+      ReminderService.instance.checkScheduledReminders();
+    }
   }
 
   @override

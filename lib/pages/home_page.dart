@@ -6,6 +6,8 @@ import '../controllers/dashboard_controller.dart';
 import '../data/health_repository.dart';
 import '../widgets/permission_banner.dart';
 import '../data/health_data_service.dart';
+import '../widgets/top_settings_menu.dart';
+
 
 // ------------------------------ 홈 대시보드 ------------------------------
 
@@ -90,7 +92,9 @@ class _HomePageState extends State<HomePage> {
     final int respDelta = snap?.deltaVs7d['resp'] ?? _respDeltaDummy;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('오늘의 건강 대시보드')),
+      appBar: AppBar(
+          title: const Text('오늘의 건강 대시보드'),
+          actions: const [TopSettingsMenu(), SizedBox(width: 4),]),
       body: RefreshIndicator(
         onRefresh: () => _dc.refresh(),
         child: SafeArea(

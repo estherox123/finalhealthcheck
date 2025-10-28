@@ -2,7 +2,7 @@
 import 'iot_api.dart';
 import 'models.dart';
 
-/// API 래퍼 + (필요 시) 캐싱/합성 책임
+/// API 래퍼 + 캐싱/합성 책임
 class IotRepository {
   final IotApi api;
   IotSnapshot? _cache;
@@ -16,7 +16,7 @@ class IotRepository {
 
   IotSnapshot? get snapshot => _cache;
 
-  // 아래 메서드들은 캐시도 갱신
+  // 아래 메서드들은 캐시 갱신
   Future<AirconState> setAcPower(bool on) async {
     final s = await api.setAirconPower(on);
     _cache = (_cache ?? IotSnapshot.initial()).copyWith(aircon: s);

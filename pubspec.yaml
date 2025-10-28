@@ -28,6 +28,12 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  pdf: ^3.10.7
+  printing: ^5.12.0
+  share_plus: ^10.0.0
+  path_provider: ^2.1.4
+  flutter_local_notifications: ^17.2.1
+  timezone: ^0.9.2
   flutter:
     sdk: flutter
   health: ^13.1.4
@@ -64,6 +70,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  assets:
+    - assets/fonts/NotoSansKR-Regular.ttf
+    - assets/fonts/NotoSansKR-Bold.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:

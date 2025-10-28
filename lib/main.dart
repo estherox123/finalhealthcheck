@@ -1,8 +1,17 @@
 // lib/main.dart
 import 'package:flutter/material.dart';
 import 'app_shell.dart';
+import 'services/reminder_service.dart';
 
-void main() => runApp(const MyApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await ReminderService.instance.init();
+  
+  // Check for due reminders when app starts
+  ReminderService.instance.checkScheduledReminders();
+  
+  runApp(const MyApp());
+}
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});

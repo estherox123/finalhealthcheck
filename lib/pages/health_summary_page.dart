@@ -8,6 +8,17 @@ import 'steps_page.dart';
 import 'sleep_detail_page.dart';
 import 'base_health_page.dart';
 
+import 'dart:io';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:printing/printing.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
+import '../reports/health_exporter.dart';
+import '../reports/health_report_models.dart';
+import '../reports/health_report_pdf.dart';
+
+
 /// 날짜 범위
 enum SummaryRange { today, week, month }
 
@@ -185,6 +196,103 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     return (nextDueAt: next, daysToDue: diff, grade: g);
   }
 
+  Future<({DateTime start, DateTime end, String label})> _currentRange() async {
+    final now = DateTime.now();
+    final end = DateTime(now.year, now.month, now.day).add(const Duration(days: 1));
+    final start = switch (_range) {
+      SummaryRange.today => end.subtract(const Duration(days: 1)),
+      SummaryRange.week  => end.subtract(const Duration(days: 7)),
+      SummaryRange.month => end.subtract(const Duration(days: 30)),
+    };
+    final label = switch (_range) {
+      SummaryRange.today => '오늘',
+      SummaryRange.week  => '최근 7일',
+      SummaryRange.month => '최근 30일',
+    };
+    return (start: start, end: end, label: label);
+  }
+
+  Future<void> _openPdfPreview() async {
+    final r = await _currentRange();
+    // 1) 범위의 모든 타입 수집
+    final exporter = HealthExporter(health);
+    final rows = await exporter.collect(
+      start: r.start,
+      end: r.end,
+      types: const [
+        HealthDataType.STEPS,
+        HealthDataType.SLEEP_SESSION,
+        HealthDataType.SLEEP_ASLEEP,
+        HealthDataType.HEART_RATE,
+        HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
+        HealthDataType.BLOOD_PRESSURE_SYSTOLIC,
+        HealthDataType.BLOOD_PRESSURE_DIASTOLIC,
+        HealthDataType.BLOOD_GLUCOSE,
+        HealthDataType.WEIGHT,
+        HealthDataType.BODY_FAT_PERCENTAGE,
+        HealthDataType.BODY_MASS_INDEX,
+      ],
+    );
+
+    // 2) PDF 생성
+    final pdfBytes = await HealthReportPdf.build(
+      HealthReportData(
+        generatedAt: DateTime.now(),
+        subjectName: '홍길동', // 사용자 이름 있으면 바꿔 주기
+        rangeLabel: r.label,
+        records: rows,
+      ),
+    );
+
+    if (!mounted) return;
+    // 3) 미리보기 (인쇄/공유 가능)
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PdfPreview(
+          build: (fmt) async => Uint8List.fromList(pdfBytes),
+          pdfFileName: "health_report.pdf",
+          allowPrinting: true,
+          allowSharing: true,
+          canChangeOrientation: false,
+          canChangePageFormat: false,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportCsvAndShare() async {
+    final r = await _currentRange();
+    final exporter = HealthExporter(health);
+    final rows = await exporter.collect(
+      start: r.start,
+      end: r.end,
+      types: const [
+        HealthDataType.STEPS,
+        HealthDataType.SLEEP_SESSION,
+        HealthDataType.SLEEP_ASLEEP,
+        HealthDataType.HEART_RATE,
+        HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
+        HealthDataType.BLOOD_PRESSURE_SYSTOLIC,
+        HealthDataType.BLOOD_PRESSURE_DIASTOLIC,
+        HealthDataType.BLOOD_GLUCOSE,
+        HealthDataType.WEIGHT,
+        HealthDataType.BODY_FAT_PERCENTAGE,
+        HealthDataType.BODY_MASS_INDEX,
+      ],
+    );
+
+    final csv = HealthRecord.toCsv(rows);
+    final dir = await getTemporaryDirectory();
+    final path =
+        '${dir.path}/health_export_${DateTime.now().millisecondsSinceEpoch}.csv';
+    final file = File(path);
+    await file.writeAsString(csv, encoding: utf8);
+
+    await Share.shareXFiles([XFile(file.path)],
+        text: '${r.label} 헬스 데이터 내보내기 (CSV)');
+  }
+
+
 
   // ---------------- Load ----------------
   Future<void> _load() async {
@@ -277,7 +385,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
         }
       }
 
-      // ✅ 대변검사 스케줄 계산 (더미 lastTestAt: 20일 전)
+      // 대변검사 스케줄 계산 (더미 lastTestAt: 20일 전)
       final DateTime? fecalLastTestAt = DateTime.now().subtract(const Duration(days: 20));
       // 권장 주기 30일, 임박 7일 기준
       final fecalSched = _calcFecalDue(last: fecalLastTestAt, cycleDays: 30, soonThresholdDays: 7);
@@ -334,6 +442,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
       SummaryRange.week => '7일',
       SummaryRange.month => '30일',
     };
+
     final df = DateFormat('M/d');
 
     final appBar = AppBar(
@@ -351,6 +460,16 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
           ],
           icon: const Icon(Icons.date_range),
           tooltip: '날짜 범위',
+        ),
+        IconButton(
+          tooltip: 'PDF 보고서',
+          icon: const Icon(Icons.picture_as_pdf),
+          onPressed: _openPdfPreview,
+        ),
+        IconButton(
+          tooltip: 'CSV 내보내기',
+          icon: const Icon(Icons.table_view),
+          onPressed: _exportCsvAndShare,
         ),
       ],
     );

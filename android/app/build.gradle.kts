@@ -17,11 +17,13 @@ android {
         versionName = flutter.versionName
         multiDexEnabled = true
     }
-
+    
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+        isCoreLibraryDesugaringEnabled = true
     }
+
     kotlinOptions {
         jvmTarget = "11"
     }
@@ -67,4 +69,8 @@ dependencies {
 
     // (필요시) 멀티덱스
     implementation("androidx.multidex:multidex:2.0.1")
+    
+    // Core library desugaring (required by flutter_local_notifications)
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+
 }

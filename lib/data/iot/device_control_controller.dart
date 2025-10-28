@@ -25,7 +25,7 @@ class DeviceControlController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Aircon
+  // 에어컨
   Future<void> toggleAc() async {
     final next = !snapshot.aircon.isOn;
     final s = await repo.setAcPower(next);
@@ -51,7 +51,7 @@ class DeviceControlController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // HRV
+  // HRV 환기
   Future<void> toggleHrv() async {
     final next = !snapshot.hrv.isOn;
     final s = await repo.setHrv(next);
@@ -59,14 +59,14 @@ class DeviceControlController extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Blinds
+  // 블라인드
   Future<void> setBlinds(BlindsStatus st) async {
     final s = await repo.setBlinds(st);
     snapshot = snapshot.copyWith(blinds: s);
     notifyListeners();
   }
 
-  // Lights
+  // 전등
   Future<void> toggleLight(String room) async {
     final m = await repo.toggleLight(room);
     snapshot = snapshot.copyWith(lights: m);
