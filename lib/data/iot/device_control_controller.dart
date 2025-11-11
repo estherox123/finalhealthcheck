@@ -1,4 +1,8 @@
 // lib/data/iot/device_control_controller.dart
+/// IoT 제어 상태관리 컨트롤러
+/// 저장소에서 스냅샷 로드 후 에어컨·환기(HRV)·블라인드·조명 토글/설정 제공,
+/// 상태(idle/loading/ready/error) 추적 및 변경 시 notifyListeners 호출
+
 import 'package:flutter/foundation.dart';
 import 'iot_repository.dart';
 import 'models.dart';
