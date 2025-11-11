@@ -1,3 +1,7 @@
+//lib/pages/accessibility_settings_page.dart
+///버튼 크기 슬라이더 / 글자 크기 프리셋
+///현재 사용 안하는중
+
 import 'package:flutter/material.dart';
 import '../accessibility/app_accessibility.dart';
 

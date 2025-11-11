@@ -1,3 +1,6 @@
+// lib/pages/emergency_contacts_page.dart
+/// 긴급 전화 번호 페이지. 119/담당병원/보호자. 통화 연동 기능 미개발.
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';

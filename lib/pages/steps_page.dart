@@ -1,3 +1,6 @@
+// lib/pages/steps_page.dart
+/// 걸음 데이터 페이지. 오늘 걸음수 + 7일간 걸음수 그래프
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';

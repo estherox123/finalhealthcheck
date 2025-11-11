@@ -1,4 +1,6 @@
 // lib/app_shell.dart
+/// 하단의 내비게이션 바 (홈/건강/제어/긴급)
+
 import 'package:flutter/material.dart';
 import 'controllers/health_controller.dart';
 import 'pages/home_page.dart';

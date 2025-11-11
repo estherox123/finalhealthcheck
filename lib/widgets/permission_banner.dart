@@ -1,4 +1,6 @@
 // lib/widgets/permission_banner.dart
+/// Health Connect 읽기 권한을 점검해 미허용 시, 안내 배너와 권한 설정하기 버튼을 보여주는 위젯
+
 import 'package:flutter/material.dart';
 import 'package:health/health.dart';
 import '../data/health_data_service.dart';

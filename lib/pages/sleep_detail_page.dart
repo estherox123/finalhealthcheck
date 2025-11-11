@@ -1,3 +1,7 @@
+// lib/pages/sleep_detail_page.dart
+/// 수면 데이터 페이지. 오늘 수면 시간 + 지난 7일 수면 그래프.
+/// 현재 수면 시간만 있음. 워치 받고 나서 세분화?
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:health/health.dart';

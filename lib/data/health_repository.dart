@@ -1,4 +1,7 @@
 // lib/data/health_repository.dart
+/// Health 데이터 리포지토리
+/// 대시보드 스냅샷(수면점수/HR/HRV/호흡수·7일 대비 추세) 계산과 걸음수 합계/일별 집계를 제공
+
 import 'dart:math';
 import 'package:health/health.dart';
 

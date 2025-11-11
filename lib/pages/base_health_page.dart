@@ -1,3 +1,6 @@
+//base_health_page.dart
+///HealthController로 권한 초기화/요청 처리. 각 페이지에서 필요한 HealthDataType 목록만 지정.
+
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:health/health.dart';

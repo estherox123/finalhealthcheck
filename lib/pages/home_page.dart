@@ -1,4 +1,6 @@
 // lib/pages/home_page.dart
+/// 홈페이지 (대시보드). 핵심 의료 데이터 + 실내 환경 + 빠른 모드 변환 + 최근 알림
+
 import 'package:flutter/material.dart';
 import 'package:finalhealthcheck/pages/sleep_detail_page.dart';
 

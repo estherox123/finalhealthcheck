@@ -1,4 +1,7 @@
 // lib/data/iot/iot_repository.dart
+/// IoT API 래퍼·캐시 저장소
+/// 스냅샷 로드/조회하고 에어컨·HRV·블라인드·조명 제어 시 내부 IotSnapshot 캐시를 갱신
+
 import 'iot_api.dart';
 import 'models.dart';
 

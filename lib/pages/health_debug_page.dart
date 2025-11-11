@@ -1,3 +1,7 @@
+// lib/pages/health_debug_page.dart
+/// 헬스 권한 관련 디버그 페이지
+/// 현재 사용 안함.
+
 import 'package:flutter/material.dart';
 import 'package:health/health.dart';
 import 'package:package_info_plus/package_info_plus.dart';

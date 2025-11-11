@@ -1,4 +1,6 @@
 // lib/pages/device_control_page.dart
+/// 기기 제어 페이지. IoT 연동 필요.
+
 import 'package:flutter/material.dart';
 
 import '../data/iot/device_control_controller.dart';

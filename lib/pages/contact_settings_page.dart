@@ -1,3 +1,6 @@
+// lib/pages/contact_settings_page.dart
+/// 긴급 연락처 설정 페이지. 병원/보호자
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../phone_format.dart';

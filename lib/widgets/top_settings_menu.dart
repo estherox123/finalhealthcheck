@@ -1,3 +1,6 @@
+// lib/widgets/top_settings_menu.dart
+/// 대시보드 (홈페이지) 우측 상단의 드롭다운 '설정' 바 위젯
+
 import 'package:flutter/material.dart';
 import '../pages/reminder_settings_page.dart';
 import '../pages/accessibility_settings_page.dart';

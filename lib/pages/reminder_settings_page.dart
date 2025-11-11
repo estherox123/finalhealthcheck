@@ -1,4 +1,6 @@
 //reminder_settings_page.dart
+/// 리마인더 설정 페이지 - 잠혈검사 (+a). 추가할 것 생각 필요.
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/reminder_service.dart';

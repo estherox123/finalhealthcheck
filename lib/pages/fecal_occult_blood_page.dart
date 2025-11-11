@@ -1,3 +1,6 @@
+// lib/pages/fecal_occult_blood_page.dart
+/// 잠혈 검사 페이지.
+
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';

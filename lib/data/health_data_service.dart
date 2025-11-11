@@ -1,4 +1,7 @@
 // lib/data/health_data_service.dart
+/// Health Connect 권한 확보·설정 이동 헬퍼
+/// 걸음/수면 데이터 수집·집계 서비스(오늘 걸음, 어젯밤 수면, 최근 N일/밤 평균 제공)
+
 import 'dart:async';
 import 'dart:io';
 import 'package:android_intent_plus/android_intent.dart';

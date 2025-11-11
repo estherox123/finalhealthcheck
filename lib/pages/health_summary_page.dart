@@ -1,4 +1,6 @@
 // lib/pages/health_summary_page.dart
+/// 헬스 데이터 요약 페이지.
+
 import 'package:finalhealthcheck/pages/fecal_occult_blood_page.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';

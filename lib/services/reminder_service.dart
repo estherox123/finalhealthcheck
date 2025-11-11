@@ -1,4 +1,7 @@
 // lib/services/reminder_service.dart
+/// reminder_settings_page.dart 에서 사용하는 플러그인
+/// 알림 형태로 원하는 시간/요일에 알림 설정 가능. << 다르게 변형할지 더 고민 해봐야 함.
+
 import 'dart:io' show Platform;
 import 'dart:async';
 import 'dart:convert';
