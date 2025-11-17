@@ -15,6 +15,9 @@ const kRecommendedTypes = <HealthDataType>[
   HealthDataType.SLEEP_ASLEEP,
   HealthDataType.HEART_RATE,
   HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
+  HealthDataType.RESPIRATORY_RATE,
+  HealthDataType.BODY_TEMPERATURE,
+  HealthDataType.BLOOD_OXYGEN,
 ];
 
 class HealthDataService {
@@ -89,6 +92,67 @@ class HealthDataService {
       if (any is num) return any.toDouble();
     } catch (_) {}
     return null;
+  }
+
+  // ---- 공통 평균 유틸 ----
+  Future<double?> _avgOfType(DateTime start, DateTime end, HealthDataType t) async {
+    final ok = await ensureAuthorized([t]);
+    if (!ok) return null;
+    try {
+      final pts = await _health.getHealthDataFromTypes(
+        types: [t], startTime: start, endTime: end,
+      );
+      final vals = <double>[];
+      for (final p in pts) {
+        final v = _toDouble(p.value);
+        if (v != null && v.isFinite) vals.add(v);
+      }
+      if (vals.isEmpty) return null;
+      final sum = vals.reduce((a,b)=>a+b);
+      return sum / vals.length;
+    } catch (_) {
+      return null;
+    }
+  }
+
+// ---- 바이탈 평균 (주간/일일/야간 윈도우) ----
+
+// 오늘 00–24시 평균 심박 (또는 임의 구간 평균)
+  Future<double?> getAvgHeartRate(DateTime start, DateTime end) =>
+      _avgOfType(start, end, HealthDataType.HEART_RATE);
+
+// 어젯밤(전날 18:00~오늘 12:00) HRV(RMSSD) 평균
+  Future<double?> getNightAvgHrvRmssd() async {
+    final today0 = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
+    final s = today0.subtract(const Duration(hours: 6));
+    final e = today0.add(const Duration(hours: 12));
+    return _avgOfType(s, e, HealthDataType.HEART_RATE_VARIABILITY_RMSSD);
+  }
+
+// 어젯밤 호흡수 평균
+  Future<double?> getNightAvgRespiratoryRate() async {
+    final today0 = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
+    final s = today0.subtract(const Duration(hours: 6));
+    final e = today0.add(const Duration(hours: 12));
+    return _avgOfType(s, e, HealthDataType.RESPIRATORY_RATE);
+  }
+
+// 어젯밤 체온(또는 피부온도 대체) 평균
+  Future<double?> getNightAvgBodyTemperature() async {
+    final today0 = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
+    final s = today0.subtract(const Duration(hours: 6));
+    final e = today0.add(const Duration(hours: 12));
+    return _avgOfType(s, e, HealthDataType.BODY_TEMPERATURE);
+  }
+
+// (선택) 어젯밤 SpO2 평균 — 플러그인에 있을 때만 사용
+  Future<double?> getNightAvgSpO2() async {
+    final types = HealthDataType.values; // 안전 가드
+    if (!types.contains(HealthDataType.BLOOD_OXYGEN)) return null;
+    final today0 = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
+    final s = today0.subtract(const Duration(hours: 6));
+    final e = today0.add(const Duration(hours: 12));
+    return _avgOfType(s, e, HealthDataType.BLOOD_OXYGEN);
   }
 
   Future<int?> getStepsInInterval(DateTime start, DateTime end) async {

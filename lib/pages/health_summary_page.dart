@@ -1,25 +1,24 @@
 // lib/pages/health_summary_page.dart
-/// 헬스 데이터 요약 페이지.
-
-import 'package:finalhealthcheck/pages/fecal_occult_blood_page.dart';
-import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
-import 'package:health/health.dart';
-
-import 'steps_page.dart';
-import 'sleep_detail_page.dart';
-import 'base_health_page.dart';
-
-import 'dart:io';
+/// 헬스 데이터 요약 페이지 (워치 연동 반영: HR/HRV/호흡/체온 실데이터)
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
+
+import 'package:flutter/material.dart';
+import 'package:health/health.dart';
+import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:path_provider/path_provider.dart';
+
+import 'base_health_page.dart';
+import 'sleep_detail_page.dart';
+import 'steps_page.dart';
 import '../reports/health_exporter.dart';
 import '../reports/health_report_models.dart';
 import '../reports/health_report_pdf.dart';
-
+import 'fecal_occult_blood_page.dart';
+import 'stress_recovery_page.dart';
 
 /// 날짜 범위
 enum SummaryRange { today, week, month }
@@ -31,19 +30,22 @@ class HealthSummaryPage extends HealthStatefulPage {
 }
 
 class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
+  // 이 페이지에서 권한 요청/유지할 타입들 (플러그인이 지원하는 항목만!)
   @override
   List<HealthDataType> get types => const [
     HealthDataType.STEPS,
     HealthDataType.SLEEP_SESSION,
-    HealthDataType.SLEEP_ASLEEP, // 가능하면 ASLEEP 우선
+    HealthDataType.SLEEP_ASLEEP,
     HealthDataType.HEART_RATE,
     HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
+    HealthDataType.RESPIRATORY_RATE,
+    HealthDataType.BODY_TEMPERATURE,
   ];
 
   SummaryRange _range = SummaryRange.today;
   bool _loading = true;
 
-  _SummaryDummy? _data; // 스켈레톤 플래시 방지
+  _SummaryModel? _data; // 스켈레톤 번쩍임 방지용 캐시
 
   @override
   void initState() {
@@ -54,14 +56,19 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     });
   }
 
-  // ---------------- Helpers ----------------
-  double? _asDouble(dynamic v) {
+  // ---------------- 공통 헬퍼 ----------------
+
+  double? _numVal(dynamic v) {
     if (v == null) return null;
     if (v is num) return v.toDouble();
     if (v is NumericHealthValue) {
       final n = v.numericValue;
       return n == null ? null : n.toDouble();
     }
+    try {
+      final any = (v as dynamic).numericValue;
+      if (any is num) return any.toDouble();
+    } catch (_) {}
     return null;
   }
 
@@ -78,7 +85,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
       );
       double sum = 0;
       for (final p in pts) {
-        final d = _asDouble(p.value);
+        final d = _numVal(p.value);
         if (d != null) sum += d;
       }
       return sum.round();
@@ -111,6 +118,27 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
       }
       if (minSum <= 0) return null;
       return Duration(minutes: minSum);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 범용 평균 수집: 주어진 타입의 값 평균 (결측 시 null)
+  Future<double?> _avgOfType(DateTime start, DateTime end, HealthDataType t) async {
+    try {
+      final pts = await health.getHealthDataFromTypes(
+        types: [t],
+        startTime: start,
+        endTime: end,
+      );
+      final vals = <double>[];
+      for (final p in pts) {
+        final v = _numVal(p.value);
+        if (v != null && v.isFinite) vals.add(v);
+      }
+      if (vals.isEmpty) return null;
+      final sum = vals.reduce((a, b) => a + b);
+      return sum / vals.length;
     } catch (_) {
       return null;
     }
@@ -175,9 +203,6 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
   }
 
   /// fecal(잠혈) 검사 주기 스케줄러
-  /// - last: 마지막 검사일(없으면 오늘-주기 로 가정하여 '지금부터 시작')
-  /// - cycleDays: 권장 주기(기본 90일)
-  /// - soonThresholdDays: 임박 경계(기본 7일)
   ({
   DateTime nextDueAt,
   int daysToDue,
@@ -203,12 +228,12 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     final end = DateTime(now.year, now.month, now.day).add(const Duration(days: 1));
     final start = switch (_range) {
       SummaryRange.today => end.subtract(const Duration(days: 1)),
-      SummaryRange.week  => end.subtract(const Duration(days: 7)),
+      SummaryRange.week => end.subtract(const Duration(days: 7)),
       SummaryRange.month => end.subtract(const Duration(days: 30)),
     };
     final label = switch (_range) {
       SummaryRange.today => '오늘',
-      SummaryRange.week  => '최근 7일',
+      SummaryRange.week => '최근 7일',
       SummaryRange.month => '최근 30일',
     };
     return (start: start, end: end, label: label);
@@ -236,7 +261,6 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
       ],
     );
 
-    // 2) PDF 생성
     final pdfBytes = await HealthReportPdf.build(
       HealthReportData(
         generatedAt: DateTime.now(),
@@ -247,7 +271,6 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     );
 
     if (!mounted) return;
-    // 3) 미리보기 (인쇄/공유 가능)
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => PdfPreview(
@@ -285,16 +308,12 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
 
     final csv = HealthRecord.toCsv(rows);
     final dir = await getTemporaryDirectory();
-    final path =
-        '${dir.path}/health_export_${DateTime.now().millisecondsSinceEpoch}.csv';
+    final path = '${dir.path}/health_export_${DateTime.now().millisecondsSinceEpoch}.csv';
     final file = File(path);
     await file.writeAsString(csv, encoding: utf8);
 
-    await Share.shareXFiles([XFile(file.path)],
-        text: '${r.label} 헬스 데이터 내보내기 (CSV)');
+    await Share.shareXFiles([XFile(file.path)], text: '${r.label} 헬스 데이터 내보내기 (CSV)');
   }
-
-
 
   // ---------------- Load ----------------
   Future<void> _load() async {
@@ -314,6 +333,12 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
       Duration? sleepAvg; // 7밤/30밤 평균(결측 제외)
       int? sleepTrend; // 오늘만
       int? sleepGrade;
+
+      // 바이탈 (실데이터; 없으면 null 유지)
+      double? hrAvg; // bpm (오늘)
+      double? hrvAvg; // ms (야간)
+      double? respAvg; // rpm (야간)
+      double? btAvg; // °C (야간)
 
       if (authorized) {
         // ---- 걸음 (오늘)
@@ -346,7 +371,6 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
           // sleep baseline: 직전 7밤(지난밤 제외)
           final slb = await _sleepBaselineNNights(7, today0);
           if (slb != null && sleepLastNight != null) {
-            stepsTrend ??= 0; // null safety
             sleepTrend = _trendArrowByMetric(
               today: sleepLastNight.inMinutes.toDouble(),
               baseline: slb.inMinutes.toDouble(),
@@ -385,15 +409,20 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
           }
           if (cnt > 0) sleepAvg = Duration(minutes: (sumMin / cnt).round());
         }
+
+        // ---- 바이탈: HR(오늘 00–24), HRV/호흡/체온(야간 평균)
+        hrAvg = await _avgOfType(today0, tomorrow0, HealthDataType.HEART_RATE);
+        hrvAvg = await _avgOfType(winStart, winEnd, HealthDataType.HEART_RATE_VARIABILITY_RMSSD);
+        respAvg = await _avgOfType(winStart, winEnd, HealthDataType.RESPIRATORY_RATE);
+        btAvg = await _avgOfType(winStart, winEnd, HealthDataType.BODY_TEMPERATURE);
       }
 
-      // 대변검사 스케줄 계산 (더미 lastTestAt: 20일 전)
+      // 대변검사 스케줄 계산 (더미 lastTestAt 예시: 20일 전, 주기/임박 기준은 실제 요구에 맞게 조정)
       final DateTime? fecalLastTestAt = DateTime.now().subtract(const Duration(days: 20));
-      // 권장 주기 30일, 임박 7일 기준
-      final fecalSched = _calcFecalDue(last: fecalLastTestAt, cycleDays: 30, soonThresholdDays: 7);
+      final fecalSched =
+      _calcFecalDue(last: fecalLastTestAt, cycleDays: 30, soonThresholdDays: 7);
 
-      // 더미(바이탈/계측) + 실데이터 반영
-      _data = _SummaryDummy(
+      _data = _SummaryModel(
         // 활동
         stepsToday: todaySteps,
         stepsAvg: stepsAvg,
@@ -404,11 +433,12 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
         sleepAvg: sleepAvg,
         sleepTrend: sleepTrend,
         sleepGrade: sleepGrade,
-        // 나머지 더미
-        hrAvg: 68,
-        hrvRmssd: 45,
-        hrGrade: 2,
-        hrvTrend: 0,
+        // ---- 바이탈(실데이터) ----
+        hrAvg: hrAvg,
+        hrvRmssd: hrvAvg,
+        respRate: respAvg,
+        bodyTempC: btAvg,
+        // ---- 이하 더미 유지 (상세 페이지 미구현용) ----
         bpSys: 122,
         bpDia: 78,
         bpGrade: 2,
@@ -425,10 +455,10 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
         urinalysisSummary: '정상',
         fecalLastTestAt: fecalLastTestAt,
         fecalCycleDays: 90,
-        fecalLastResult: '잠혈 없음',           // 나중에 사용자 입력으로 갱신
-        fecalDueGrade: fecalSched.grade,       // 색상 등급
-        fecalNextDueAt: fecalSched.nextDueAt,  // 다음 검사 예정일
-        fecalDaysToDue: fecalSched.daysToDue,  // D-값
+        fecalLastResult: '잠혈 없음',
+        fecalDueGrade: fecalSched.grade,
+        fecalNextDueAt: fecalSched.nextDueAt,
+        fecalDaysToDue: fecalSched.daysToDue,
       );
     } finally {
       if (!mounted) return;
@@ -513,7 +543,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
                 ),
               ),
 
-            // 활동
+            // -------- 활동 --------
             const _SectionTitle('활동 요약'),
             _SummaryTile(
               title: '활동량',
@@ -535,17 +565,13 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             ),
             const SizedBox(height: 8),
 
-            // 수면
+            // -------- 수면 --------
             const _SectionTitle('수면'),
             _SummaryTile(
               title: '수면 요약',
               subtitle: _range == SummaryRange.today
-                  ? (d.sleepYesterday == null
-                  ? '기록 없음'
-                  : _fmtDur(d.sleepYesterday!))
-                  : (d.sleepAvg == null
-                  ? '기록 없음'
-                  : '평균 ${_fmtDur(d.sleepAvg!)}'),
+                  ? (d.sleepYesterday == null ? '기록 없음' : _fmtDur(d.sleepYesterday!))
+                  : (d.sleepAvg == null ? '기록 없음' : '평균 ${_fmtDur(d.sleepAvg!)}'),
               status: _gradeToStatus(d.sleepGrade ?? 1),
               trend: d.sleepTrend ?? 0,
               icon: Icons.bedtime_outlined,
@@ -557,23 +583,75 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             ),
             const SizedBox(height: 8),
 
-            // 바이탈 (더미)
+            // -------- 바이탈 (실데이터) --------
             const _SectionTitle('바이탈'),
+
+            // HR
             _SummaryTile(
-              title: '심박수(+HRV)',
-              subtitle: 'HR ${d.hrAvg} bpm\nHRV ${d.hrvRmssd} ms',
-              status: _gradeToStatus(d.hrGrade),
-              trend: d.hrvTrend,
+              title: '심박수',
+              subtitle: (d.hrAvg == null) ? '기록 없음' : '${d.hrAvg!.toStringAsFixed(0)} bpm',
+              status: _gradeToStatus(_gradeByRange(d.hrAvg, low: 50, high: 90)),
+              trend: 0,
               icon: Icons.monitor_heart_outlined,
               showTrend: false,
               onTap: () => Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const _WipPage(title: '심박/HRV')),
+                MaterialPageRoute(builder: (_) => const _WipPage(title: '심박')),
               ),
             ),
             const SizedBox(height: 8),
 
-            // 계측 (더미)
+            // HRV
+            _SummaryTile(
+              title: '스트레스/회복',
+              subtitle:
+              (d.hrvRmssd == null) ? '기록 없음' : '${d.hrvRmssd!.toStringAsFixed(0)} ms',
+              status: _gradeToStatus(_gradeByThresholdUpBetter(d.hrvRmssd, good: 50, warn: 30)),
+              trend: 0,
+              icon: Icons.multiline_chart,
+              showTrend: false,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const StressRecoveryPage()),
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // Respiratory rate
+            _SummaryTile(
+              title: '호흡수(야간)',
+              subtitle:
+              (d.respRate == null) ? '기록 없음' : '${d.respRate!.toStringAsFixed(1)} rpm',
+              status:
+              _gradeToStatus(_gradeByBand(d.respRate, goodLow: 12, goodHigh: 18, warnBand: 2)),
+              trend: 0,
+              icon: Icons.air_outlined,
+              showTrend: false,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const _WipPage(title: '호흡수')),
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // Body temperature
+            _SummaryTile(
+              title: '체온(야간)',
+              subtitle:
+              (d.bodyTempC == null) ? '기록 없음' : '${d.bodyTempC!.toStringAsFixed(1)} °C',
+              status: _gradeToStatus(
+                  _gradeByBand(d.bodyTempC, goodLow: 36.0, goodHigh: 37.2, warnBand: .3)),
+              trend: 0,
+              icon: Icons.device_thermostat,
+              showTrend: false,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const _WipPage(title: '체온')),
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // -------- 진단/계측 (더미 유지) --------
             const _SectionTitle('진단/계측'),
             _SummaryTile(
               title: '혈압',
@@ -615,12 +693,12 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             ),
             const SizedBox(height: 8),
 
-            // 소변 검사
-            _SectionTitle('소변/대변 검사'),
+            // -------- 소변/대변 --------
+            const _SectionTitle('소변/대변 검사'),
             _SummaryTile(
               title: '소변검사',
-              subtitle: d.urinalysisSummary,             // 문자열 요약
-              status: _gradeToStatus(d.urinalysisGrade), // 색상 반영
+              subtitle: d.urinalysisSummary,
+              status: _gradeToStatus(d.urinalysisGrade),
               trend: 0,
               icon: Icons.science_outlined,
               showTrend: false,
@@ -631,15 +709,10 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             ),
             const SizedBox(height: 8),
 
-            // 대변검사(잠혈) - 주기/예정 안내형
             _SummaryTile(
               title: '대변검사(잠혈)',
-              // 예: "다음 검사: 3/12 (D-5)\n마지막 결과: 잠혈 없음"
               subtitle: () {
-                final next = d.fecalNextDueAt;
-                final df = DateFormat('M/d');
-                final dDay = d.fecalDaysToDue; // 음수면 D+ (연체)
-                final lastResult = d.fecalLastResult;
+                final dDay = d.fecalDaysToDue; // 음수면 연체(D+)
                 return '다음 검사까지:\n$dDay일';
               }(),
               status: _gradeToStatus(d.fecalDueGrade), // 여유/임박/연체 → 초록/노랑/빨강
@@ -648,20 +721,14 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               showTrend: false,
               onTap: () => Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (_) => const FecalOccultBloodPage(),
-                ),
+                MaterialPageRoute(builder: (_) => const FecalOccultBloodPage()),
               ),
             ),
-            const SizedBox(height: 8),
-
             const SizedBox(height: 16),
+
             Text(
               '${df.format(DateTime.now())} 기준 • 의료적 판단은 의료진과 상의하세요.',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: Colors.grey[600]),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
               textAlign: TextAlign.center,
             ),
           ],
@@ -677,11 +744,6 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     final h = d.inMinutes ~/ 60;
     final m = d.inMinutes % 60;
     return '${h}시간 ${m}분';
-  }
-
-  static String _deltaStr(double v) {
-    if (v == 0) return '변화 없음';
-    return (v > 0 ? '+' : '') + v.toStringAsFixed(1) + ' kg';
   }
 
   static _Status _gradeToStatus(int g) => switch (g) {
@@ -763,8 +825,7 @@ class _SummaryTile extends StatelessWidget {
 
     final arrowIcon =
     trend > 0 ? Icons.arrow_upward : (trend < 0 ? Icons.arrow_downward : Icons.horizontal_rule);
-    final arrowColor =
-    trend > 0 ? Colors.green : (trend < 0 ? Colors.red : Colors.grey[600]);
+    final arrowColor = trend > 0 ? Colors.green : (trend < 0 ? Colors.red : Colors.grey[600]);
 
     return InkWell(
       onTap: onTap,
@@ -854,8 +915,8 @@ class _SkeletonTile extends StatelessWidget {
 }
 
 /// -------- 데이터 컨테이너 --------
-/// 걸음/수면은 실데이터만 사용(없으면 '기록 없음' 표기). 나머지는 더미.
-class _SummaryDummy {
+/// 걸음/수면/바이탈은 실데이터(null 허용). 그 외는 더미 유지.
+class _SummaryModel {
   // 활동
   final int? stepsToday;
   final int? stepsAvg;
@@ -868,11 +929,11 @@ class _SummaryDummy {
   final int? sleepTrend; // 오늘만
   final int? sleepGrade;
 
-  // HR/HRV (더미)
-  final int hrAvg;
-  final int hrvRmssd;
-  final int hrGrade;
-  final int hrvTrend;
+  // ---- 바이탈(실데이터) ----
+  final double? hrAvg; // bpm
+  final double? hrvRmssd; // ms
+  final double? respRate; // rpm
+  final double? bodyTempC; // °C
 
   // 혈압/혈당/체중 (더미)
   final int bpSys;
@@ -891,28 +952,32 @@ class _SummaryDummy {
   final int weightTrend;
 
   // 소변/대변 검사 요약
-  final int urinalysisGrade;         // 0/1/2 (빨/노/초)
-  final String urinalysisSummary;    // 예: '정상 (모든 항목 음성)'
-  final DateTime? fecalLastTestAt;     // 마지막 검사일 (사용자 기록)
-  final int fecalCycleDays;            // 권장 검사 주기 (예: 90일)
-  final String fecalLastResult;        // 최근 결과 요약 (예: '잠혈 없음' / '잠혈 의심')
-  final int fecalDueGrade;             // 2:정상(여유), 1:임박, 0:연체  → 색상에 사용
-  final DateTime fecalNextDueAt;       // 다음 권장 검사일
-  final int fecalDaysToDue;            // D-값 (음수면 연체)
+  final int urinalysisGrade; // 0/1/2 (빨/노/초)
+  final String urinalysisSummary; // 예: '정상 (모든 항목 음성)'
+  final DateTime? fecalLastTestAt; // 마지막 검사일 (사용자 기록)
+  final int fecalCycleDays; // 권장 검사 주기 (예: 90일)
+  final String fecalLastResult; // 최근 결과 요약
+  final int fecalDueGrade; // 2:정상(여유), 1:임박, 0:연체
+  final DateTime fecalNextDueAt; // 다음 권장 검사일
+  final int fecalDaysToDue; // D-값 (음수면 연체)
 
-  const _SummaryDummy({
+  const _SummaryModel({
+    // 활동
     required this.stepsToday,
     required this.stepsAvg,
     required this.stepsTrend,
     required this.stepsGrade,
+    // 수면
     required this.sleepYesterday,
     required this.sleepAvg,
     required this.sleepTrend,
     required this.sleepGrade,
+    // 바이탈
     required this.hrAvg,
     required this.hrvRmssd,
-    required this.hrGrade,
-    required this.hrvTrend,
+    required this.respRate,
+    required this.bodyTempC,
+    // 더미
     required this.bpSys,
     required this.bpDia,
     required this.bpGrade,
@@ -966,4 +1031,30 @@ class _WipPage extends StatelessWidget {
       body: const Center(child: Text('개발중', style: TextStyle(fontSize: 18))),
     );
   }
+}
+
+// ---------------- 등급 계산 보조 ----------------
+// 값이 null이면 warn(1)로 표기(데이터 없음 = 주의) — 원하면 정책 조정
+int _gradeByRange(double? v, {required double low, required double high}) {
+  if (v == null) return 1;
+  if (v >= low && v <= high) return 2;
+  if ((v >= low - 5 && v < low) || (v > high && v <= high + 10)) return 1;
+  return 0;
+}
+
+int _gradeByThresholdUpBetter(double? v, {required double good, required double warn}) {
+  if (v == null) return 1;
+  if (v >= good) return 2;
+  if (v >= warn) return 1;
+  return 0;
+}
+
+int _gradeByBand(double? v,
+    {required double goodLow, required double goodHigh, required double warnBand}) {
+  if (v == null) return 1;
+  if (v >= goodLow && v <= goodHigh) return 2;
+  if ((v >= goodLow - warnBand && v < goodLow) || (v > goodHigh && v <= goodHigh + warnBand)) {
+    return 1;
+  }
+  return 0;
 }
