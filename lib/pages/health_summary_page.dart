@@ -14,6 +14,7 @@ import 'package:share_plus/share_plus.dart';
 import 'base_health_page.dart';
 import 'sleep_detail_page.dart';
 import 'steps_page.dart';
+import '../data/recovery_score.dart' as rec;
 import '../reports/health_exporter.dart';
 import '../reports/health_report_models.dart';
 import '../reports/health_report_pdf.dart';
@@ -40,6 +41,10 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
     HealthDataType.RESPIRATORY_RATE,
     HealthDataType.BODY_TEMPERATURE,
+    // TODO(v0.2): 가능하면 SpO₂ / SLEEP_AWAKE 타입도 추가
+    // HealthDataType.BLOOD_OXYGEN,        // 실제 enum 이름 확인 필요
+    // HealthDataType.SLEEP_AWAKE,
+
   ];
 
   SummaryRange _range = SummaryRange.today;
@@ -202,6 +207,99 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     }
   }
 
+  /// 최근 3박 + 오늘 밤 기준으로 회복 점수 계산.
+  /// today0: 오늘 00:00
+  Future<rec.RecoveryScore?> _loadTodayRecoveryScore(DateTime today0) async {
+    if (!authorized) return null;
+
+    // 오늘 포함 4밤 (3일 history + 오늘)
+    final nights = <rec.NightRecoveryRaw>[];
+
+    // 오래된 밤부터 쌓기 (오름차순)
+    for (int i = 3; i >= 0; i--) {
+      final anchor = today0.subtract(Duration(days: i));
+      final winStart = anchor.subtract(const Duration(hours: 6));  // 18:00
+      final winEnd = anchor.add(const Duration(hours: 12));        // 다음날 12:00
+
+      final sleep = await _sleepTotalInWindow(winStart, winEnd);
+      final hrMean = await _avgOfType(
+        winStart,
+        winEnd,
+        HealthDataType.HEART_RATE,
+      );
+      final hrv = await _avgOfType(
+        winStart,
+        winEnd,
+        HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
+      );
+      final resp = await _avgOfType(
+        winStart,
+        winEnd,
+        HealthDataType.RESPIRATORY_RATE,
+      );
+
+      // TODO: 나중에 SpO₂/각성 횟수/기상 시각까지 채우고 싶으면 여기서 같이 계산
+      const int? awakenings = null;
+      const double? spo2Min = null;
+
+      // 완전히 비어 있는 밤은 스킵
+      if (sleep == null &&
+          hrMean == null &&
+          hrv == null &&
+          resp == null &&
+          spo2Min == null) {
+        continue;
+      }
+
+      nights.add(
+        rec.NightRecoveryRaw(
+          nightDate: anchor,
+          hrMean: hrMean,
+          hrvRmssd: hrv,
+          respRate: resp,
+          sleepTotal: sleep,
+          sleepAwakenings: awakenings,
+          spo2Min: spo2Min,
+        ),
+      );
+    }
+
+    if (nights.isEmpty) return null;
+
+    // nights는 과거→현재 오름차순이므로 그대로 사용
+    return rec.computeRecoveryFromNights(nights);
+  }
+
+  String _recoveryLabelText(rec.RecoveryLabel? label) {
+    switch (label) {
+      case rec.RecoveryLabel.recoveryUp:
+        return '회복↑';
+      case rec.RecoveryLabel.good:
+        return '양호';
+      case rec.RecoveryLabel.caution:
+        return '주의';
+      case rec.RecoveryLabel.needRest:
+        return '휴식 필요';
+      default:
+        return '추정 중';
+    }
+  }
+
+  _Status _recoveryLabelToStatus(rec.RecoveryLabel? label) {
+    switch (label) {
+      case rec.RecoveryLabel.recoveryUp:
+      case rec.RecoveryLabel.good:
+        return _Status.good;
+      case rec.RecoveryLabel.caution:
+        return _Status.warn;
+      case rec.RecoveryLabel.needRest:
+        return _Status.bad;
+      default:
+      // 데이터가 없거나 baseline 부족일 때: 일단 warn
+        return _Status.warn;
+    }
+  }
+
   /// fecal(잠혈) 검사 주기 스케줄러
   ({
   DateTime nextDueAt,
@@ -340,11 +438,15 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
       double? respAvg; // rpm (야간)
       double? btAvg; // °C (야간)
 
+      // 회복 지표
+      rec.RecoveryScore? recovery;
+
       if (authorized) {
         // ---- 걸음 (오늘)
         todaySteps = await _sumSteps(today0, tomorrow0);
         if (todaySteps != null) {
-          stepsGrade = (todaySteps >= 8000 ? 2 : (todaySteps >= 4000 ? 1 : 0));
+          stepsGrade =
+          (todaySteps >= 8000 ? 2 : (todaySteps >= 4000 ? 1 : 0));
         }
 
         // ---- 수면 (어젯밤: 18:00 ~ 오늘 12:00)
@@ -407,22 +509,41 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               cnt++;
             }
           }
-          if (cnt > 0) sleepAvg = Duration(minutes: (sumMin / cnt).round());
+          if (cnt > 0) {
+            sleepAvg = Duration(minutes: (sumMin / cnt).round());
+          }
         }
 
-        // ---- 바이탈: HR(오늘 00–24), HRV/호흡/체온(야간 평균)
-        hrAvg = await _avgOfType(today0, tomorrow0, HealthDataType.HEART_RATE);
-        hrvAvg = await _avgOfType(winStart, winEnd, HealthDataType.HEART_RATE_VARIABILITY_RMSSD);
-        respAvg = await _avgOfType(winStart, winEnd, HealthDataType.RESPIRATORY_RATE);
-        btAvg = await _avgOfType(winStart, winEnd, HealthDataType.BODY_TEMPERATURE);
+        // ---- 바이탈: HR/HRV/호흡/체온 ----
+        final winStartForVitals = today0.subtract(const Duration(hours: 6));
+        final winEndForVitals = today0.add(const Duration(hours: 12));
+
+        hrAvg = await _avgOfType(
+            today0, tomorrow0, HealthDataType.HEART_RATE);
+        hrvAvg = await _avgOfType(winStartForVitals, winEndForVitals,
+            HealthDataType.HEART_RATE_VARIABILITY_RMSSD);
+        respAvg = await _avgOfType(
+            winStartForVitals, winEndForVitals, HealthDataType.RESPIRATORY_RATE);
+        btAvg = await _avgOfType(
+            winStartForVitals, winEndForVitals, HealthDataType.BODY_TEMPERATURE);
+
+        // ---- 회복 지표 (오늘 탭일 때만) ----
+        if (_range == SummaryRange.today) {
+          recovery = await _loadTodayRecoveryScore(today0);
+        }
       }
 
-      // 대변검사 스케줄 계산 (더미 lastTestAt 예시: 20일 전, 주기/임박 기준은 실제 요구에 맞게 조정)
-      final DateTime? fecalLastTestAt = DateTime.now().subtract(const Duration(days: 20));
+      // ---- 대변검사 스케줄 계산 (권한 여부와 무관) ----
+      final DateTime? fecalLastTestAt =
+      DateTime.now().subtract(const Duration(days: 20));
       final fecalSched =
       _calcFecalDue(last: fecalLastTestAt, cycleDays: 30, soonThresholdDays: 7);
 
       _data = _SummaryModel(
+        // 회복 지표
+        recoveryScore: recovery?.score,
+        recoveryLabel: recovery?.label,
+        recoveryLowConfidence: recovery?.lowConfidence,
         // 활동
         stepsToday: todaySteps,
         stepsAvg: stepsAvg,
@@ -438,7 +559,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
         hrvRmssd: hrvAvg,
         respRate: respAvg,
         bodyTempC: btAvg,
-        // ---- 이하 더미 유지 (상세 페이지 미구현용) ----
+        // ---- 이하 더미 유지 ----
         bpSys: 122,
         bpDia: 78,
         bpGrade: 2,
@@ -465,6 +586,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
       setState(() => _loading = false);
     }
   }
+
 
   // ---------------- UI ----------------
   @override
@@ -543,6 +665,32 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
                 ),
               ),
 
+            // -------- 회복 지표 (오늘만) --------
+            if (_range == SummaryRange.today) ...[
+              const _SectionTitle('회복 지표'),
+              _SummaryTile(
+                title: '회복 점수',
+                subtitle: () {
+                  if (d.recoveryScore == null) return '데이터 부족';
+                  final labelText = _recoveryLabelText(d.recoveryLabel);
+                  final lc = d.recoveryLowConfidence == true ? '' : '';
+                  return '${d.recoveryScore} 점 • $labelText$lc';
+                }(),
+                status: _recoveryLabelToStatus(d.recoveryLabel),
+                trend: 0,
+                icon: Icons.bolt_outlined,
+                showTrend: false,
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                      const StressRecoveryPage(), // 일단 기존 페이지로 라우팅
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+
             // -------- 활동 --------
             const _SectionTitle('활동 요약'),
             _SummaryTile(
@@ -597,56 +745,6 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const _WipPage(title: '심박')),
-              ),
-            ),
-            const SizedBox(height: 8),
-
-            // HRV
-            _SummaryTile(
-              title: '스트레스/회복',
-              subtitle:
-              (d.hrvRmssd == null) ? '기록 없음' : '${d.hrvRmssd!.toStringAsFixed(0)} ms',
-              status: _gradeToStatus(_gradeByThresholdUpBetter(d.hrvRmssd, good: 50, warn: 30)),
-              trend: 0,
-              icon: Icons.multiline_chart,
-              showTrend: false,
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const StressRecoveryPage()),
-              ),
-            ),
-            const SizedBox(height: 8),
-
-            // Respiratory rate
-            _SummaryTile(
-              title: '호흡수(야간)',
-              subtitle:
-              (d.respRate == null) ? '기록 없음' : '${d.respRate!.toStringAsFixed(1)} rpm',
-              status:
-              _gradeToStatus(_gradeByBand(d.respRate, goodLow: 12, goodHigh: 18, warnBand: 2)),
-              trend: 0,
-              icon: Icons.air_outlined,
-              showTrend: false,
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const _WipPage(title: '호흡수')),
-              ),
-            ),
-            const SizedBox(height: 8),
-
-            // Body temperature
-            _SummaryTile(
-              title: '체온(야간)',
-              subtitle:
-              (d.bodyTempC == null) ? '기록 없음' : '${d.bodyTempC!.toStringAsFixed(1)} °C',
-              status: _gradeToStatus(
-                  _gradeByBand(d.bodyTempC, goodLow: 36.0, goodHigh: 37.2, warnBand: .3)),
-              trend: 0,
-              icon: Icons.device_thermostat,
-              showTrend: false,
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const _WipPage(title: '체온')),
               ),
             ),
             const SizedBox(height: 8),
@@ -917,6 +1015,11 @@ class _SkeletonTile extends StatelessWidget {
 /// -------- 데이터 컨테이너 --------
 /// 걸음/수면/바이탈은 실데이터(null 허용). 그 외는 더미 유지.
 class _SummaryModel {
+  // ---- 회복 지표 ----
+  final int? recoveryScore;                // 0–100
+  final rec.RecoveryLabel? recoveryLabel;  // 회복↑/양호/주의/휴식필요
+  final bool? recoveryLowConfidence;       // baseline/history 부족 플래그
+
   // 활동
   final int? stepsToday;
   final int? stepsAvg;
@@ -962,6 +1065,10 @@ class _SummaryModel {
   final int fecalDaysToDue; // D-값 (음수면 연체)
 
   const _SummaryModel({
+    // 회복 지표
+    required this.recoveryScore,
+    required this.recoveryLabel,
+    required this.recoveryLowConfidence,
     // 활동
     required this.stepsToday,
     required this.stepsAvg,
