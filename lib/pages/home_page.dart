@@ -11,6 +11,7 @@ import '../data/health_repository.dart';
 import '../widgets/permission_banner.dart';
 import '../data/health_data_service.dart';
 import '../widgets/top_settings_menu.dart';
+import 'heart_rate_detail_page.dart';
 
 // ===== QuickMode & ModeService =====
 enum QuickMode { sleep, rest, daily }
@@ -39,16 +40,24 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   // 더미 초기값(실데이터 로드 전까지 표시)
-  int _sleepScoreDummy = 82; int _sleepDeltaDummy = 1;
-  int _heartRateDummy = 68;  int _hrDeltaDummy = 0;
-  int _hrvDummy = 52;        int _hrvDeltaDummy = -1;
-  double _respDummy = 14.5;  int _respDeltaDummy = 0;
+  int _sleepScoreDummy = 82;
+  int _sleepDeltaDummy = 1;
+  int _heartRateDummy = 68;
+  int _hrDeltaDummy = 0;
+  int _hrvDummy = 52;
+  int _hrvDeltaDummy = -1;
+  double _respDummy = 14.5;
+  int _respDeltaDummy = 0;
+
+  // 활동 시간 더미(분 단위)
+  int _activityMinutesDummy = 38;
+  int _activityDeltaDummy = -1;
 
   // 환경 더미(추후 IoT 연동 예정)
-  double temp = 24.6;     // °C
+  double temp = 24.6; // °C
   double humidity = 45.0; // %
-  int co2 = 820;          // ppm
-  double pm25 = 22.0;     // µg/m³
+  int co2 = 820; // ppm
+  double pm25 = 22.0; // µg/m³
 
   static const List<_NotificationItem> _lastNoti = [
     _NotificationItem(icon: Icons.air, text: '환기 권장: CO₂가 곧 1000ppm에 도달'),
@@ -83,7 +92,10 @@ class _HomePageState extends State<HomePage> {
   Future<void> _setMode(QuickMode m, String toast) async {
     if (_modeBusy || _mode == m) return;
     final prev = _mode;
-    setState(() { _mode = m; _modeBusy = true; });
+    setState(() {
+      _mode = m;
+      _modeBusy = true;
+    });
     showOneShotSnackBar(context, toast);
 
     try {
@@ -102,7 +114,8 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
     final now = DateTime.now();
-    final dateStr = '${now.year}.${_two(now.month)}.${_two(now.day)} (${_weekdayKR(now.weekday)})';
+    final dateStr =
+        '${now.year}.${_two(now.month)}.${_two(now.day)} (${_weekdayKR(now.weekday)})';
     final greet = _greeting(now);
 
     // Compact 모드: 화면 폭이 좁거나 텍스트 배율이 큰 경우
@@ -135,6 +148,10 @@ class _HomePageState extends State<HomePage> {
     final double? respiration = snap?.respirationNight ?? _respDummy;
     final int respDelta = snap?.deltaVs7d['resp'] ?? _respDeltaDummy;
 
+    // 활동 시간은 아직 컨트롤러에 없다고 가정하고 더미만 사용
+    final int activityMinutes = _activityMinutesDummy;
+    final int activityDelta = _activityDeltaDummy;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('오늘의 건강 대시보드'),
@@ -150,7 +167,8 @@ class _HomePageState extends State<HomePage> {
         onRefresh: () async {
           try {
             await _dc.refresh();
-            await Future<void>.delayed(const Duration(milliseconds: 150)); // 상태 반영 대기
+            await Future<void>.delayed(
+                const Duration(milliseconds: 150)); // 상태 반영 대기
             if (!mounted) return;
             if (_dc.status == DashboardStatus.error) {
               showOneShotSnackBar(context, '갱신 실패: 네트워크를 확인해주세요');
@@ -177,41 +195,60 @@ class _HomePageState extends State<HomePage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(greet,
-                            maxLines: 2,
-                            style: _scale(
-                              Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                fontWeight: FontWeight.w700,
-                                height: 1.1,
-                                letterSpacing: -0.1,
-                              ),
-                              typeScale,
-                            )),
+                        Text(
+                          greet,
+                          maxLines: 2,
+                          style: _scale(
+                            Theme.of(context)
+                                .textTheme
+                                .headlineSmall
+                                ?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              height: 1.1,
+                              letterSpacing: -0.1,
+                            ),
+                            typeScale,
+                          ),
+                        ),
                         const SizedBox(height: 4),
-                        Text(dateStr,
-                            maxLines: 1,
-                            style: _scale(
-                              Theme.of(context).textTheme.bodyLarge?.copyWith(color: Colors.grey[600]),
-                              typeScale,
-                            )),
+                        Text(
+                          dateStr,
+                          maxLines: 1,
+                          style: _scale(
+                            Theme.of(context)
+                                .textTheme
+                                .bodyLarge
+                                ?.copyWith(color: Colors.grey[600]),
+                            typeScale,
+                          ),
+                        ),
                       ],
                     ),
                   ),
                   CircleAvatar(
                     radius: compact ? 18 : 22,
-                    backgroundColor: Theme.of(context).colorScheme.primary.withOpacity(0.15),
-                    child: Icon(Icons.face_6_outlined, color: Theme.of(context).colorScheme.primary),
+                    backgroundColor: Theme.of(context)
+                        .colorScheme
+                        .primary
+                        .withOpacity(0.15),
+                    child: Icon(Icons.face_6_outlined,
+                        color: Theme.of(context).colorScheme.primary),
                   )
                 ],
               ),
               const SizedBox(height: 12),
 
               // 2) 오늘의 컨디션 (Wrap 2열)
-              Text('오늘의 컨디션',
-                  style: _scale(
-                    Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-                    typeScale,
-                  )),
+              Text(
+                '오늘의 컨디션',
+                style: _scale(
+                  Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                  typeScale,
+                ),
+              ),
               const SizedBox(height: 8),
               Wrap(
                 spacing: gridSpacing,
@@ -223,58 +260,81 @@ class _HomePageState extends State<HomePage> {
                       title: '수면 점수',
                       valueText: (sleepScore == null) ? '-' : '$sleepScore',
                       unit: (sleepScore == null) ? '' : '/100',
-                      color: _statusColorFor('sleep', (sleepScore ?? 0)),
+                      color:
+                      _statusColorFor('sleep', (sleepScore ?? 0).toDouble()),
                       delta: sleepDelta,
-                      caption: (sleepScore == null) ? '연동 필요' : '7일 평균 대비',
+                      caption:
+                      (sleepScore == null) ? '연동 필요' : '7일 평균 대비',
                       icon: Icons.bedtime_outlined,
                       typeScale: typeScale,
                       compact: compact,
-                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SleepDetailPage())),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const SleepDetailPage()),
+                      ),
                     ),
                   ),
                   SizedBox(
                     width: cardWidth,
                     child: _ConditionCard(
                       title: '심박수',
-                      valueText: (heartRate == null) ? '-' : _fmtInt(heartRate!),
+                      valueText: (heartRate == null)
+                          ? '-'
+                          : _fmtInt(heartRate!),
                       unit: (heartRate == null) ? '' : ' bpm',
-                      color: _statusColorFor('hr', (heartRate ?? 0)),
+                      color: _statusColorFor('hr', (heartRate ?? 0).toDouble()),
                       delta: hrDelta,
-                      caption: (heartRate == null) ? '연동 필요' : '7일 평균 대비',
+                      caption:
+                      (heartRate == null) ? '연동 필요' : '7일 평균 대비',
                       icon: Icons.favorite_outline,
                       typeScale: typeScale,
                       compact: compact,
-                      onTap: (_dc.status == DashboardStatus.loading) ? null : () {},
+                      onTap: (heartRate == null)
+                          ? null
+                          : () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const HeartRateDetailPage(),
+                        ),
+                      ),
                     ),
                   ),
                   SizedBox(
                     width: cardWidth,
                     child: _ConditionCard(
                       title: '심박변이도',
-                      valueText: (hrv == null) ? '-' : _fmtInt(hrv!),
+                      valueText:
+                      (hrv == null) ? '-' : _fmtInt(hrv!),
                       unit: (hrv == null) ? '' : ' ms',
-                      color: _statusColorFor('hrv', (hrv ?? 0)),
+                      color:
+                      _statusColorFor('hrv', (hrv ?? 0).toDouble()),
                       delta: hrvDelta,
                       caption: (hrv == null) ? '연동 필요' : '7일 평균 대비',
                       icon: Icons.multiline_chart,
                       typeScale: typeScale,
                       compact: compact,
-                      onTap: (_dc.status == DashboardStatus.loading) ? null : () {},
+                      onTap: (_dc.status == DashboardStatus.loading)
+                          ? null
+                          : () {},
                     ),
                   ),
                   SizedBox(
                     width: cardWidth,
                     child: _ConditionCard(
-                      title: '호흡수',
-                      valueText: (respiration == null) ? '-' : respiration!.toStringAsFixed(1),
-                      unit: (respiration == null) ? '' : ' rpm',
-                      color: _statusColorFor('resp', (respiration ?? 0)),
-                      delta: respDelta,
-                      caption: (respiration == null) ? '연동 필요' : '야간 평균',
-                      icon: Icons.air_outlined,
+                      title: '활동 시간',
+                      valueText: _fmtInt(activityMinutes),
+                      unit: ' 분',
+                      color: _statusColorFor(
+                          'activity', activityMinutes.toDouble()),
+                      delta: activityDelta,
+                      caption: '7일 평균 대비',
+                      icon: Icons.directions_walk,
                       typeScale: typeScale,
                       compact: compact,
-                      onTap: (_dc.status == DashboardStatus.loading) ? null : () {},
+                      onTap: (_dc.status == DashboardStatus.loading)
+                          ? null
+                          : () {},
                     ),
                   ),
                 ],
@@ -282,11 +342,16 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(height: 14),
 
               // 3) 실내 환경 (더미 값)
-              Text('실내 환경',
-                  style: _scale(
-                    Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-                    typeScale,
-                  )),
+              Text(
+                '실내 환경',
+                style: _scale(
+                  Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                  typeScale,
+                ),
+              ),
               const SizedBox(height: 8),
 
               if (!compact) ...[
@@ -336,7 +401,9 @@ class _HomePageState extends State<HomePage> {
                         trailing: (pm25 > 35.0)
                             ? TextButton(
                           onPressed: () {},
-                          child: const Text('조치하기', style: TextStyle(fontWeight: FontWeight.w600)),
+                          child: const Text('조치하기',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.w600)),
                         )
                             : null,
                       ),
@@ -379,7 +446,8 @@ class _HomePageState extends State<HomePage> {
                     alignment: Alignment.centerRight,
                     child: TextButton(
                       onPressed: () {},
-                      child: const Text('조치하기', style: TextStyle(fontWeight: FontWeight.w600)),
+                      child: const Text('조치하기',
+                          style: TextStyle(fontWeight: FontWeight.w600)),
                     ),
                   )
                       : null,
@@ -389,11 +457,16 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(height: 16),
 
               // 4) 빠른 모드 토글 (더미 액션)
-              Text('빠른 모드',
-                  style: _scale(
-                    Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-                    typeScale,
-                  )),
+              Text(
+                '빠른 모드',
+                style: _scale(
+                  Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                  typeScale,
+                ),
+              ),
               const SizedBox(height: 8),
               Row(
                 children: [
@@ -401,7 +474,8 @@ class _HomePageState extends State<HomePage> {
                     child: _ModeButton(
                       label: '수면',
                       icon: Icons.bedtime,
-                      onPressed: () => _setMode(QuickMode.sleep, '수면 모드로 전환합니다…'),
+                      onPressed: () => _setMode(
+                          QuickMode.sleep, '수면 모드로 전환합니다…'),
                       typeScale: typeScale,
                       compact: compact,
                     ),
@@ -411,7 +485,8 @@ class _HomePageState extends State<HomePage> {
                     child: _ModeButton(
                       label: '휴식',
                       icon: Icons.spa_outlined,
-                      onPressed: () => _setMode(QuickMode.rest, '휴식 모드로 전환합니다…'),
+                      onPressed: () =>
+                          _setMode(QuickMode.rest, '휴식 모드로 전환합니다…'),
                       typeScale: typeScale,
                       compact: compact,
                     ),
@@ -421,7 +496,8 @@ class _HomePageState extends State<HomePage> {
                     child: _ModeButton(
                       label: '일상',
                       icon: Icons.flash_on_outlined,
-                      onPressed: () => _setMode(QuickMode.daily, '일상 모드로 전환합니다…'),
+                      onPressed: () =>
+                          _setMode(QuickMode.daily, '일상 모드로 전환합니다…'),
                       typeScale: typeScale,
                       compact: compact,
                     ),
@@ -431,13 +507,20 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(height: 16),
 
               // 5) 최근 알림 3개 (더미)
-              Text('최근 알림',
-                  style: _scale(
-                    Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-                    typeScale,
-                  )),
+              Text(
+                '최근 알림',
+                style: _scale(
+                  Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w700),
+                  typeScale,
+                ),
+              ),
               const SizedBox(height: 8),
-              ..._lastNoti.take(3).map((n) => _NotiTile(item: n, typeScale: typeScale)),
+              ..._lastNoti
+                  .take(3)
+                  .map((n) => _NotiTile(item: n, typeScale: typeScale)),
               const SizedBox(height: 6),
               Align(
                 alignment: Alignment.centerRight,
@@ -484,15 +567,38 @@ class _ConditionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bg = color.withOpacity(0.12);
-    final arrow = delta > 0 ? Icons.arrow_upward
-        : delta < 0 ? Icons.arrow_downward
+    final arrow = delta > 0
+        ? Icons.arrow_upward
+        : delta < 0
+        ? Icons.arrow_downward
         : Icons.horizontal_rule;
-    final arrowColor = delta > 0 ? Colors.green : (delta < 0 ? Colors.red : Colors.grey[600]);
+    final arrowColor =
+    delta > 0 ? Colors.green : (delta < 0 ? Colors.red : Colors.grey[600]);
 
-    final titleStyle = _scale(Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700), typeScale);
-    final valueStyle = _withTabular(_scale(Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w800), typeScale));
-    final unitStyle = _withTabular(_scale(Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.grey[700]), typeScale));
-    final captionStyle = _scale(Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[700]), typeScale);
+    final titleStyle = _scale(
+        Theme.of(context)
+            .textTheme
+            .titleMedium
+            ?.copyWith(fontWeight: FontWeight.w700),
+        typeScale);
+    final valueStyle = _withTabular(_scale(
+        Theme.of(context)
+            .textTheme
+            .headlineMedium
+            ?.copyWith(fontWeight: FontWeight.w800),
+        typeScale));
+    final unitStyle = _withTabular(_scale(
+        Theme.of(context)
+            .textTheme
+            .titleMedium
+            ?.copyWith(color: Colors.grey[700]),
+        typeScale));
+    final captionStyle = _scale(
+        Theme.of(context)
+            .textTheme
+            .bodySmall
+            ?.copyWith(color: Colors.grey[700]),
+        typeScale);
 
     final needBadge = (caption == '연동 필요');
 
@@ -523,13 +629,22 @@ class _ConditionCard extends StatelessWidget {
                   ),
                   if (needBadge)
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 2),
                       decoration: BoxDecoration(
                         color: Colors.orange.withOpacity(0.15),
                         borderRadius: BorderRadius.circular(999),
-                        border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                        border: Border.all(
+                            color: Colors.orange.withOpacity(0.3)),
                       ),
-                      child: const Text('연동 필요', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Colors.orange)),
+                      child: const Text(
+                        '연동 필요',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.orange,
+                        ),
+                      ),
                     ),
                 ],
               ),
@@ -546,7 +661,11 @@ class _ConditionCard extends StatelessWidget {
                           child: FittedBox(
                             fit: BoxFit.scaleDown,
                             alignment: Alignment.bottomLeft,
-                            child: Text(valueText, maxLines: 1, style: valueStyle),
+                            child: Text(
+                              valueText,
+                              maxLines: 1,
+                              style: valueStyle,
+                            ),
                           ),
                         ),
                         const SizedBox(width: 4),
@@ -556,7 +675,11 @@ class _ConditionCard extends StatelessWidget {
                             child: FittedBox(
                               fit: BoxFit.scaleDown,
                               alignment: Alignment.bottomLeft,
-                              child: Text(unit, maxLines: 1, style: unitStyle),
+                              child: Text(
+                                unit,
+                                maxLines: 1,
+                                style: unitStyle,
+                              ),
                             ),
                           ),
                         ),
@@ -564,7 +687,10 @@ class _ConditionCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 2),
-                  SizedBox(width: 22, child: Icon(arrow, size: 18, color: arrowColor)),
+                  SizedBox(
+                    width: 22,
+                    child: Icon(arrow, size: 18, color: arrowColor),
+                  ),
                 ],
               ),
               const SizedBox(height: 4),
@@ -584,7 +710,7 @@ class _EnvTile extends StatelessWidget {
   final IconData icon;
   final double typeScale;
   final Widget? trailing; // 가로형 전용
-  final Widget? bottom;   // 세로형 전용
+  final Widget? bottom; // 세로형 전용
 
   const _EnvTile.horizontal({
     required this.label,
@@ -630,7 +756,13 @@ class _EnvTile extends StatelessWidget {
                 child: Text(
                   label,
                   maxLines: 2,
-                  style: _scale(Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700), 1.0),
+                  style: _scale(
+                    Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                    1.0,
+                  ),
                 ),
               )
             ]),
@@ -640,7 +772,15 @@ class _EnvTile extends StatelessWidget {
               alignment: Alignment.centerLeft,
               child: Text(
                 value,
-                style: _withTabular(_scale(Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800), 1.0)),
+                style: _withTabular(
+                  _scale(
+                    Theme.of(context)
+                        .textTheme
+                        .titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w800),
+                    1.0,
+                  ),
+                ),
               ),
             ),
             if (bottom != null) ...[
@@ -676,7 +816,13 @@ class _EnvTile extends StatelessWidget {
                 Text(
                   label,
                   maxLines: 2,
-                  style: _scale(Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700), typeScale),
+                  style: _scale(
+                    Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                    typeScale,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 FittedBox(
@@ -684,7 +830,15 @@ class _EnvTile extends StatelessWidget {
                   alignment: Alignment.centerLeft,
                   child: Text(
                     value,
-                    style: _withTabular(_scale(Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800), typeScale)),
+                    style: _withTabular(
+                      _scale(
+                        Theme.of(context)
+                            .textTheme
+                            .titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                        typeScale,
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -692,7 +846,8 @@ class _EnvTile extends StatelessWidget {
           ),
           if (trailing != null)
             ConstrainedBox(
-              constraints: const BoxConstraints(minWidth: 0, maxWidth: 120),
+              constraints:
+              const BoxConstraints(minWidth: 0, maxWidth: 120),
               child: FittedBox(fit: BoxFit.scaleDown, child: trailing),
             ),
         ],
@@ -726,8 +881,10 @@ class _ModeButton extends StatelessWidget {
           backgroundColor: c.withOpacity(0.10),
           foregroundColor: c,
           elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          textStyle: TextStyle(fontSize: (16 * typeScale), fontWeight: FontWeight.w700),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16)),
+          textStyle: TextStyle(
+              fontSize: (16 * typeScale), fontWeight: FontWeight.w700),
         ),
         onPressed: onPressed,
         child: Row(
@@ -765,13 +922,16 @@ class _NotiTile extends StatelessWidget {
       dense: false,
       contentPadding: const EdgeInsets.symmetric(horizontal: 0),
       leading: CircleAvatar(
-        backgroundColor: Theme.of(context).colorScheme.primary.withOpacity(0.12),
-        child: Icon(item.icon, color: Theme.of(context).colorScheme.primary),
+        backgroundColor:
+        Theme.of(context).colorScheme.primary.withOpacity(0.12),
+        child: Icon(item.icon,
+            color: Theme.of(context).colorScheme.primary),
       ),
       title: Text(
         item.text,
         maxLines: 3,
-        style: _scale(const TextStyle(fontWeight: FontWeight.w600), typeScale),
+        style:
+        _scale(const TextStyle(fontWeight: FontWeight.w600), typeScale),
       ),
       trailing: const Icon(Icons.chevron_right),
       onTap: () {},
@@ -789,7 +949,8 @@ void showOneShotSnackBar(BuildContext context, String text) {
     ..clearSnackBars();
   m.showSnackBar(
     SnackBar(
-      content: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
+      content:
+      Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
       duration: const Duration(milliseconds: 900),
       behavior: SnackBarBehavior.floating,
       margin: const EdgeInsets.all(12),
@@ -799,9 +960,10 @@ void showOneShotSnackBar(BuildContext context, String text) {
 
 // 날짜 헬퍼
 String _weekdayKR(int wd) {
-  const m = {1:'월',2:'화',3:'수',4:'목',5:'금',6:'토',7:'일'};
+  const m = {1: '월', 2: '화', 3: '수', 4: '목', 5: '금', 6: '토', 7: '일'};
   return m[wd] ?? '';
 }
+
 String _two(int x) => x.toString().padLeft(2, '0');
 
 TextStyle? _scale(TextStyle? s, double f) =>
@@ -822,7 +984,9 @@ Color _statusColorFor(String key, num value) {
       return Colors.red;
     case 'hr':
       if (value >= 50 && value <= 90) return Colors.green;
-      if ((value > 90 && value <= 100) || (value >= 45 && value < 50)) return Colors.orange;
+      if ((value > 90 && value <= 100) || (value >= 45 && value < 50)) {
+        return Colors.orange;
+      }
       return Colors.red;
     case 'hrv':
       if (value >= 50) return Colors.green;
@@ -830,7 +994,16 @@ Color _statusColorFor(String key, num value) {
       return Colors.red;
     case 'resp':
       if (value >= 12 && value <= 18) return Colors.green;
-      if ((value >= 10 && value < 12) || (value > 18 && value <= 20)) return Colors.orange;
+      if ((value >= 10 && value < 12) || (value > 18 && value <= 20)) {
+        return Colors.orange;
+      }
+      return Colors.red;
+    case 'activity':
+    // 활동 시간(분): 30~90분 정도를 "좋음"으로 가정
+      if (value >= 30 && value <= 90) return Colors.green;
+      if ((value >= 15 && value < 30) || (value > 90 && value <= 120)) {
+        return Colors.orange;
+      }
       return Colors.red;
   }
   return Colors.grey;
@@ -841,23 +1014,29 @@ _Grade _gradeTemp(double c) {
   if ((c > 24 && c <= 27) || (c >= 18 && c < 20)) return _Grade.warn;
   return _Grade.bad;
 }
+
 _Grade _gradeHum(double h) {
   if (h >= 40 && h <= 60) return _Grade.good;
   if ((h >= 30 && h < 40) || (h > 60 && h <= 70)) return _Grade.warn;
   return _Grade.bad;
 }
+
 _Grade _gradeCO2(int x) {
   if (x < 1000) return _Grade.good;
   if (x <= 1500) return _Grade.warn;
   return _Grade.bad;
 }
+
 _Grade _gradePM25(double x) {
   if (x < 15) return _Grade.good;
   if (x <= 35) return _Grade.warn;
   return _Grade.bad;
 }
+
 Color _colorForGrade(_Grade g) =>
-    g == _Grade.good ? Colors.green : (g == _Grade.warn ? Colors.orange : Colors.red);
+    g == _Grade.good
+        ? Colors.green
+        : (g == _Grade.warn ? Colors.orange : Colors.red);
 
 String _greeting(DateTime now) {
   final h = now.hour;
