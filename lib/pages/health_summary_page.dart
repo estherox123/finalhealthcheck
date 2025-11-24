@@ -749,6 +749,56 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             ),
             const SizedBox(height: 8),
 
+            // HRV
+            _SummaryTile(
+              title: '스트레스/회복',
+              subtitle:
+              (d.hrvRmssd == null) ? '기록 없음' : '${d.hrvRmssd!.toStringAsFixed(0)} ms',
+              status: _gradeToStatus(_gradeByThresholdUpBetter(d.hrvRmssd, good: 50, warn: 30)),
+              trend: 0,
+              icon: Icons.multiline_chart,
+              showTrend: false,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const StressRecoveryPage()),
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // Respiratory rate
+            _SummaryTile(
+              title: '호흡수(야간)',
+              subtitle:
+              (d.respRate == null) ? '기록 없음' : '${d.respRate!.toStringAsFixed(1)} rpm',
+              status:
+              _gradeToStatus(_gradeByBand(d.respRate, goodLow: 12, goodHigh: 18, warnBand: 2)),
+              trend: 0,
+              icon: Icons.air_outlined,
+              showTrend: false,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const _WipPage(title: '호흡수')),
+              ),
+            ),
+            const SizedBox(height: 8),
+
+            // Body temperature
+            _SummaryTile(
+              title: '체온(야간)',
+              subtitle:
+              (d.bodyTempC == null) ? '기록 없음' : '${d.bodyTempC!.toStringAsFixed(1)} °C',
+              status: _gradeToStatus(
+                  _gradeByBand(d.bodyTempC, goodLow: 36.0, goodHigh: 37.2, warnBand: .3)),
+              trend: 0,
+              icon: Icons.device_thermostat,
+              showTrend: false,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const _WipPage(title: '체온')),
+              ),
+            ),
+            const SizedBox(height: 8),
+
             // -------- 진단/계측 (더미 유지) --------
             const _SectionTitle('진단/계측'),
             _SummaryTile(
