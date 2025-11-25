@@ -15,10 +15,9 @@ import 'package:share_plus/share_plus.dart';
 import 'base_health_page.dart';
 import 'sleep_detail_page.dart';
 import 'steps_page.dart';
+import 'heart_rate_detail_page.dart';
 import 'fecal_occult_blood_page.dart';
 import 'stress_recovery_page.dart';
-import 'heart_rate_detail_page.dart'; // ✅ 심박수 상세 페이지 연동
-
 import '../data/recovery_score.dart' as rec;
 import '../reports/health_exporter.dart';
 import '../reports/health_report_models.dart';
@@ -29,12 +28,13 @@ enum SummaryRange { today, week, month }
 
 class HealthSummaryPage extends HealthStatefulPage {
   const HealthSummaryPage({super.key});
+
   @override
   State<HealthSummaryPage> createState() => _HealthSummaryPageState();
 }
 
 class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
-  // 이 페이지에서 권한 요청/유지할 타입들
+  // 이 페이지에서 권한 요청/유지할 타입들 (플러그인이 지원하는 항목만!)
   @override
   List<HealthDataType> get types => const [
     HealthDataType.STEPS,
@@ -44,6 +44,9 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
     HealthDataType.RESPIRATORY_RATE,
     HealthDataType.BODY_TEMPERATURE,
+    // TODO(v0.2): 가능하면 SpO₂ / SLEEP_AWAKE 타입도 추가
+    // HealthDataType.BLOOD_OXYGEN,
+    // HealthDataType.SLEEP_AWAKE,
   ];
 
   SummaryRange _range = SummaryRange.today;
@@ -99,10 +102,14 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
   }
 
   /// [winStart, winEnd) 수면 총합. ASLEEP 있으면 우선 사용, 없으면 SESSION.
-  Future<Duration?> _sleepTotalInWindow(DateTime winStart, DateTime winEnd) async {
+  Future<Duration?> _sleepTotalInWindow(
+      DateTime winStart, DateTime winEnd) async {
     try {
       final pts = await health.getHealthDataFromTypes(
-        types: const [HealthDataType.SLEEP_ASLEEP, HealthDataType.SLEEP_SESSION],
+        types: const [
+          HealthDataType.SLEEP_ASLEEP,
+          HealthDataType.SLEEP_SESSION,
+        ],
         startTime: winStart,
         endTime: winEnd,
       );
@@ -110,7 +117,9 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
       pts.where((p) => p.type == HealthDataType.SLEEP_ASLEEP).toList();
       final base = asleep.isNotEmpty
           ? asleep
-          : pts.where((p) => p.type == HealthDataType.SLEEP_SESSION).toList();
+          : pts
+          .where((p) => p.type == HealthDataType.SLEEP_SESSION)
+          .toList();
 
       int minSum = 0;
       for (final p in base) {
@@ -171,7 +180,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
   Future<Duration?> _sleepBaselineNNights(int n, DateTime today0) async {
     int sumMin = 0, cnt = 0;
     for (int i = 2; i <= n + 1; i++) {
-      final anchor = today0.subtract(Duration(days: i - 1)); // i=2 -> 어제 이전
+      final anchor = today0.subtract(Duration(days: i - 1));
       final winStart = anchor.subtract(const Duration(hours: 6)); // 18:00
       final winEnd = anchor.add(const Duration(hours: 12)); // 다음날 12:00
       final dur = await _sleepTotalInWindow(winStart, winEnd);
@@ -210,7 +219,8 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
 
   /// 최근 3박 + 오늘 밤 기준으로 회복 점수 계산.
   /// today0: 오늘 00:00
-  Future<rec.RecoveryScore?> _loadTodayRecoveryScore(DateTime today0) async {
+  Future<rec.RecoveryScore?> _loadTodayRecoveryScore(
+      DateTime today0) async {
     if (!authorized) return null;
 
     // 오늘 포함 4밤 (3일 history + 오늘)
@@ -223,12 +233,21 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
       final winEnd = anchor.add(const Duration(hours: 12)); // 다음날 12:00
 
       final sleep = await _sleepTotalInWindow(winStart, winEnd);
-      final hrMean =
-      await _avgOfType(winStart, winEnd, HealthDataType.HEART_RATE);
+      final hrMean = await _avgOfType(
+        winStart,
+        winEnd,
+        HealthDataType.HEART_RATE,
+      );
       final hrv = await _avgOfType(
-          winStart, winEnd, HealthDataType.HEART_RATE_VARIABILITY_RMSSD);
+        winStart,
+        winEnd,
+        HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
+      );
       final resp = await _avgOfType(
-          winStart, winEnd, HealthDataType.RESPIRATORY_RATE);
+        winStart,
+        winEnd,
+        HealthDataType.RESPIRATORY_RATE,
+      );
 
       const int? awakenings = null;
       const double? spo2Min = null;
@@ -257,6 +276,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
 
     if (nights.isEmpty) return null;
 
+    // nights는 과거→현재 오름차순이므로 그대로 사용
     return rec.computeRecoveryFromNights(nights);
   }
 
@@ -285,7 +305,8 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
       case rec.RecoveryLabel.needRest:
         return _Status.bad;
       default:
-        return _Status.warn; // 데이터 없거나 baseline 부족
+      // 데이터가 없거나 baseline 부족일 때: 일단 warn
+        return _Status.warn;
     }
   }
 
@@ -300,13 +321,14 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     int soonThresholdDays = 7,
   }) {
     final today = DateTime.now();
-    final base = last ?? today;
-    final next =
-    DateTime(base.year, base.month, base.day).add(Duration(days: cycleDays));
+    final base = last ?? today; // 마지막 검사 없으면 오늘을 기준으로 시작
+    final next = DateTime(base.year, base.month, base.day)
+        .add(Duration(days: cycleDays));
 
     final diff = next
         .difference(DateTime(today.year, today.month, today.day))
         .inDays;
+    // 등급: 연체(<0)=0, 임박(<=7)=1, 여유(>7)=2
     final g = diff < 0 ? 0 : (diff <= soonThresholdDays ? 1 : 2);
 
     return (nextDueAt: next, daysToDue: diff, grade: g);
@@ -331,6 +353,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
 
   Future<void> _openPdfPreview() async {
     final r = await _currentRange();
+    // 1) 범위의 모든 타입 수집
     final exporter = HealthExporter(health);
     final rows = await exporter.collect(
       start: r.start,
@@ -353,7 +376,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     final pdfBytes = await HealthReportPdf.build(
       HealthReportData(
         generatedAt: DateTime.now(),
-        subjectName: '홍길동', // TODO: 사용자 이름 있으면 바꾸기
+        subjectName: '홍길동', // 사용자 이름 있으면 바꿔 주기
         rangeLabel: r.label,
         records: rows,
       ),
@@ -510,11 +533,13 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
         }
 
         // ---- 바이탈: HR/HRV/호흡/체온 ----
-        final winStartForVitals = today0.subtract(const Duration(hours: 6));
-        final winEndForVitals = today0.add(const Duration(hours: 12));
+        final winStartForVitals =
+        today0.subtract(const Duration(hours: 6));
+        final winEndForVitals =
+        today0.add(const Duration(hours: 12));
 
-        hrAvg =
-        await _avgOfType(today0, tomorrow0, HealthDataType.HEART_RATE);
+        hrAvg = await _avgOfType(
+            today0, tomorrow0, HealthDataType.HEART_RATE);
         hrvAvg = await _avgOfType(
           winStartForVitals,
           winEndForVitals,
@@ -561,12 +586,12 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
         sleepAvg: sleepAvg,
         sleepTrend: sleepTrend,
         sleepGrade: sleepGrade,
-        // 바이탈
+        // ---- 바이탈(실데이터) ----
         hrAvg: hrAvg,
         hrvRmssd: hrvAvg,
         respRate: respAvg,
         bodyTempC: btAvg,
-        // 이하 더미 유지
+        // ---- 이하 더미 유지 ----
         bpSys: 122,
         bpDia: 78,
         bpGrade: 2,
@@ -602,6 +627,15 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
       SummaryRange.week => '7일',
       SummaryRange.month => '30일',
     };
+
+    // 🔹 활동+수면을 한 섹션으로 묶어서 라벨만 범위에 맞게 바꿔줌
+    String activitySleepSectionTitle() => switch (_range) {
+      SummaryRange.today => '오늘 활동·수면',
+      SummaryRange.week => '최근 7일 활동·수면',
+      SummaryRange.month => '최근 30일 활동·수면',
+    };
+
+    String recoverySectionTitle() => '오늘 회복 상태';
 
     final df = DateFormat('M/d');
 
@@ -675,7 +709,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
 
             // -------- 회복 지표 (오늘만) --------
             if (_range == SummaryRange.today) ...[
-              const _SectionTitle('회복 지표'),
+              _SectionTitle(recoverySectionTitle()),
               _SummaryTile(
                 title: '회복 점수',
                 subtitle: () {
@@ -697,8 +731,10 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               const SizedBox(height: 16),
             ],
 
-            // -------- 활동 --------
-            const _SectionTitle('활동 요약'),
+            // -------- 활동 + 수면 (한 섹션 안에 카드 2개) --------
+            _SectionTitle(activitySleepSectionTitle()),
+
+            // 활동 카드
             _SummaryTile(
               title: '활동량',
               subtitle: _range == SummaryRange.today
@@ -719,8 +755,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
             ),
             const SizedBox(height: 8),
 
-            // -------- 수면 --------
-            const _SectionTitle('수면'),
+            // 수면 카드
             _SummaryTile(
               title: '수면 요약',
               subtitle: _range == SummaryRange.today
@@ -737,35 +772,34 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const SleepDetailPage(),
-                ),
+                    builder: (_) => const SleepDetailPage()),
               ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 16),
 
             // -------- 바이탈 (실데이터) --------
             const _SectionTitle('바이탈'),
 
-            // HR
             _SummaryTile(
               title: '심박수',
-              subtitle:
-              (d.hrAvg == null) ? '기록 없음' : '${d.hrAvg!.toStringAsFixed(0)} bpm',
-              status:
-              _gradeToStatus(_gradeByRange(d.hrAvg, low: 50, high: 90)),
+              subtitle: (d.hrAvg == null)
+                  ? '기록 없음'
+                  : '${d.hrAvg!.toStringAsFixed(0)} bpm',
+              status: _gradeToStatus(
+                _gradeByRange(d.hrAvg, low: 50, high: 90),
+              ),
               trend: 0,
               icon: Icons.monitor_heart_outlined,
               showTrend: false,
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const HeartRateDetailPage(), // ✅ 실제 심박수 페이지로 이동
+                  builder: (_) => const HeartRateDetailPage(),
                 ),
               ),
             ),
             const SizedBox(height: 8),
 
-            // HRV
             _SummaryTile(
               title: '스트레스/회복',
               subtitle: (d.hrvRmssd == null)
@@ -784,13 +818,11 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const StressRecoveryPage(),
-                ),
+                    builder: (_) => const StressRecoveryPage()),
               ),
             ),
             const SizedBox(height: 8),
 
-            // Respiratory rate
             _SummaryTile(
               title: '호흡수(야간)',
               subtitle: (d.respRate == null)
@@ -810,13 +842,11 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const _WipPage(title: '호흡수'),
-                ),
+                    builder: (_) => const _WipPage(title: '호흡수')),
               ),
             ),
             const SizedBox(height: 8),
 
-            // Body temperature
             _SummaryTile(
               title: '체온(야간)',
               subtitle: (d.bodyTempC == null)
@@ -836,14 +866,13 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const _WipPage(title: '체온'),
-                ),
+                    builder: (_) => const _WipPage(title: '체온')),
               ),
             ),
             const SizedBox(height: 8),
 
-            // -------- 진단/계측 (더미 유지) --------
-            const _SectionTitle('진단/계측'),
+            // -------- 검사 --------
+            const _SectionTitle('검사'),
             _SummaryTile(
               title: '혈압',
               subtitle: '${d.bpSys}/${d.bpDia} mmHg',
@@ -854,8 +883,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const _WipPage(title: '혈압'),
-                ),
+                    builder: (_) => const _WipPage(title: '혈압')),
               ),
             ),
             const SizedBox(height: 8),
@@ -870,14 +898,13 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const _WipPage(title: '혈당'),
-                ),
+                    builder: (_) => const _WipPage(title: '혈당')),
               ),
             ),
             const SizedBox(height: 8),
             _SummaryTile(
               title: '체중',
-              subtitle: '${d.weight.toStringAsFixed(1)} kg',
+              subtitle: d.weight.toStringAsFixed(1) + ' kg',
               status: _gradeToStatus(d.weightGrade),
               trend: d.weightTrend,
               icon: Icons.monitor_weight_outlined,
@@ -885,14 +912,10 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const _WipPage(title: '체중'),
-                ),
+                    builder: (_) => const _WipPage(title: '체중')),
               ),
             ),
             const SizedBox(height: 8),
-
-            // -------- 소변/대변 --------
-            const _SectionTitle('소변/대변 검사'),
             _SummaryTile(
               title: '소변검사',
               subtitle: d.urinalysisSummary,
@@ -903,12 +926,10 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const _WipPage(title: '소변검사'),
-                ),
+                    builder: (_) => const _WipPage(title: '소변검사')),
               ),
             ),
             const SizedBox(height: 8),
-
             _SummaryTile(
               title: '대변검사(잠혈)',
               subtitle: () {
@@ -922,8 +943,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const FecalOccultBloodPage(),
-                ),
+                    builder: (_) => const FecalOccultBloodPage()),
               ),
             ),
             const SizedBox(height: 16),
@@ -942,9 +962,9 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     );
   }
 
+
   // ---------- 표현 유틸 ----------
-  static String _fmtSteps(int v) =>
-      NumberFormat('#,###').format(v);
+  static String _fmtSteps(int v) => NumberFormat('#,###').format(v);
 
   static String _fmtDur(Duration d) {
     final h = d.inMinutes ~/ 60;
@@ -990,11 +1010,12 @@ class _SummaryTile extends StatelessWidget {
   static final RegExp _numRe = RegExp(r'(\d[\d,]*(?:\.\d+)?)');
 
   InlineSpan _buildSubtitleSpan(BuildContext context, String text) {
-    final base = Theme.of(context).textTheme.bodyMedium?.copyWith(
-      color: Colors.grey[800],
-      fontSize: 15,
-    ) ??
-        const TextStyle(fontSize: 18, color: Colors.black87);
+    final base =
+        Theme.of(context).textTheme.bodyMedium?.copyWith(
+          color: Colors.grey[800],
+          fontSize: 15,
+        ) ??
+            const TextStyle(fontSize: 18, color: Colors.black87);
 
     final numStyle = base.copyWith(
       fontSize: (base.fontSize ?? 17) + 6, // 숫자만 +6pt
@@ -1042,8 +1063,9 @@ class _SummaryTile extends StatelessWidget {
     final arrowIcon = trend > 0
         ? Icons.arrow_upward
         : (trend < 0 ? Icons.arrow_downward : Icons.horizontal_rule);
-    final arrowColor =
-    trend > 0 ? Colors.green : (trend < 0 ? Colors.red : Colors.grey[600]);
+    final arrowColor = trend > 0
+        ? Colors.green
+        : (trend < 0 ? Colors.red : Colors.grey[600]);
 
     return InkWell(
       onTap: onTap,
@@ -1069,7 +1091,10 @@ class _SummaryTile extends StatelessWidget {
               child: Text(
                 title,
                 maxLines: 2,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(
                   fontWeight: FontWeight.w700,
                   fontSize: 18,
                   letterSpacing: -0.2,
@@ -1124,6 +1149,7 @@ class _SummaryTile extends StatelessWidget {
 /// 로딩 플레이스홀더(간단)
 class _SkeletonTile extends StatelessWidget {
   const _SkeletonTile();
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -1236,6 +1262,7 @@ class _SummaryModel {
 class _SectionTitle extends StatelessWidget {
   final String text;
   const _SectionTitle(this.text, {super.key});
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -1255,6 +1282,7 @@ class _SectionTitle extends StatelessWidget {
 class _WipPage extends StatelessWidget {
   final String title;
   const _WipPage({required this.title, super.key});
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1270,15 +1298,12 @@ class _WipPage extends StatelessWidget {
 }
 
 // ---------------- 등급 계산 보조 ----------------
-
-int _gradeByRange(
-    double? v, {
-      required double low,
-      required double high,
-    }) {
+// 값이 null이면 warn(1)로 표기(데이터 없음 = 주의)
+int _gradeByRange(double? v, {required double low, required double high}) {
   if (v == null) return 1;
   if (v >= low && v <= high) return 2;
-  if ((v >= low - 5 && v < low) || (v > high && v <= high + 10)) return 1;
+  if ((v >= low - 5 && v < low) ||
+      (v > high && v <= high + 10)) return 1;
   return 0;
 }
 
