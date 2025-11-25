@@ -1,17 +1,25 @@
 // lib/pages/home_page.dart
 /// 홈페이지 (대시보드). 핵심 의료 데이터 + 실내 환경 + 빠른 모드 변환 + 최근 알림
+/// - 수면 점수 (지난 밤 수면 + 패턴 기반 점수)
+/// - 심박수 (지난 밤 평균 심박수)
+/// - 심박변이도
+/// - 활동 시간(더미: 지금은 대시보드용 간단 지표)
+/// - 실내 환경(더미)
+/// - 빠른 모드 (수면/휴식/일상)
+/// - 최근 알림
 
 import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:finalhealthcheck/pages/sleep_detail_page.dart';
+import 'package:finalhealthcheck/pages/heart_rate_detail_page.dart';
+import 'package:finalhealthcheck/pages/steps_page.dart';
 
 import '../controllers/dashboard_controller.dart';
 import '../data/health_repository.dart';
 import '../widgets/permission_banner.dart';
 import '../data/health_data_service.dart';
 import '../widgets/top_settings_menu.dart';
-import 'heart_rate_detail_page.dart';
 
 // ===== QuickMode & ModeService =====
 enum QuickMode { sleep, rest, daily }
@@ -42,16 +50,19 @@ class _HomePageState extends State<HomePage> {
   // 더미 초기값(실데이터 로드 전까지 표시)
   int _sleepScoreDummy = 82;
   int _sleepDeltaDummy = 1;
+
   int _heartRateDummy = 68;
   int _hrDeltaDummy = 0;
+
   int _hrvDummy = 52;
   int _hrvDeltaDummy = -1;
+
   double _respDummy = 14.5;
   int _respDeltaDummy = 0;
 
-  // 활동 시간 더미(분 단위)
-  int _activityMinutesDummy = 38;
-  int _activityDeltaDummy = -1;
+  // 활동 시간 더미(아직 컨트롤러에는 없음)
+  int _activityMinutesDummy = 45;
+  int _activityDeltaDummy = 0;
 
   // 환경 더미(추후 IoT 연동 예정)
   double temp = 24.6; // °C
@@ -139,6 +150,7 @@ class _HomePageState extends State<HomePage> {
     final int? sleepScore = snap?.sleepScore ?? _sleepScoreDummy;
     final int sleepDelta = snap?.deltaVs7d['sleep'] ?? _sleepDeltaDummy;
 
+    // 심박수: 리포지토리에서 "지난 밤 평균 심박수" 기준으로 계산되도록 맞춰둠
     final int? heartRate = snap?.heartRateAvg ?? _heartRateDummy;
     final int hrDelta = snap?.deltaVs7d['hr'] ?? _hrDeltaDummy;
 
@@ -231,9 +243,11 @@ class _HomePageState extends State<HomePage> {
                         .colorScheme
                         .primary
                         .withOpacity(0.15),
-                    child: Icon(Icons.face_6_outlined,
-                        color: Theme.of(context).colorScheme.primary),
-                  )
+                    child: Icon(
+                      Icons.face_6_outlined,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 12),
@@ -254,14 +268,14 @@ class _HomePageState extends State<HomePage> {
                 spacing: gridSpacing,
                 runSpacing: gridSpacing,
                 children: [
+                  // 수면 점수
                   SizedBox(
                     width: cardWidth,
                     child: _ConditionCard(
                       title: '수면 점수',
                       valueText: (sleepScore == null) ? '-' : '$sleepScore',
                       unit: (sleepScore == null) ? '' : '/100',
-                      color:
-                      _statusColorFor('sleep', (sleepScore ?? 0).toDouble()),
+                      color: _statusColorFor('sleep', (sleepScore ?? 0)),
                       delta: sleepDelta,
                       caption:
                       (sleepScore == null) ? '연동 필요' : '7일 평균 대비',
@@ -271,26 +285,28 @@ class _HomePageState extends State<HomePage> {
                       onTap: () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                            builder: (_) => const SleepDetailPage()),
+                          builder: (_) => const SleepDetailPage(),
+                        ),
                       ),
                     ),
                   ),
+
+                  // 심박수 (지난 밤 평균 심박수)
                   SizedBox(
                     width: cardWidth,
                     child: _ConditionCard(
                       title: '심박수',
-                      valueText: (heartRate == null)
-                          ? '-'
-                          : _fmtInt(heartRate!),
+                      valueText:
+                      (heartRate == null) ? '-' : _fmtInt(heartRate!),
                       unit: (heartRate == null) ? '' : ' bpm',
-                      color: _statusColorFor('hr', (heartRate ?? 0).toDouble()),
+                      color: _statusColorFor('hr', (heartRate ?? 0)),
                       delta: hrDelta,
                       caption:
                       (heartRate == null) ? '연동 필요' : '7일 평균 대비',
                       icon: Icons.favorite_outline,
                       typeScale: typeScale,
                       compact: compact,
-                      onTap: (heartRate == null)
+                      onTap: (_dc.status == DashboardStatus.loading)
                           ? null
                           : () => Navigator.push(
                         context,
@@ -300,17 +316,18 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                   ),
+
+                  // HRV
                   SizedBox(
                     width: cardWidth,
                     child: _ConditionCard(
                       title: '심박변이도',
-                      valueText:
-                      (hrv == null) ? '-' : _fmtInt(hrv!),
+                      valueText: (hrv == null) ? '-' : _fmtInt(hrv!),
                       unit: (hrv == null) ? '' : ' ms',
-                      color:
-                      _statusColorFor('hrv', (hrv ?? 0).toDouble()),
+                      color: _statusColorFor('hrv', (hrv ?? 0)),
                       delta: hrvDelta,
-                      caption: (hrv == null) ? '연동 필요' : '7일 평균 대비',
+                      caption:
+                      (hrv == null) ? '연동 필요' : '7일 평균 대비',
                       icon: Icons.multiline_chart,
                       typeScale: typeScale,
                       compact: compact,
@@ -319,14 +336,15 @@ class _HomePageState extends State<HomePage> {
                           : () {},
                     ),
                   ),
+
+                  // 활동 시간
                   SizedBox(
                     width: cardWidth,
                     child: _ConditionCard(
                       title: '활동 시간',
-                      valueText: _fmtInt(activityMinutes),
+                      valueText: '$activityMinutes',
                       unit: ' 분',
-                      color: _statusColorFor(
-                          'activity', activityMinutes.toDouble()),
+                      color: Colors.teal,
                       delta: activityDelta,
                       caption: '7일 평균 대비',
                       icon: Icons.directions_walk,
@@ -334,7 +352,12 @@ class _HomePageState extends State<HomePage> {
                       compact: compact,
                       onTap: (_dc.status == DashboardStatus.loading)
                           ? null
-                          : () {},
+                          : () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const StepsPage(),
+                        ),
+                      ),
                     ),
                   ),
                 ],
@@ -401,9 +424,10 @@ class _HomePageState extends State<HomePage> {
                         trailing: (pm25 > 35.0)
                             ? TextButton(
                           onPressed: () {},
-                          child: const Text('조치하기',
-                              style: TextStyle(
-                                  fontWeight: FontWeight.w600)),
+                          child: const Text(
+                            '조치하기',
+                            style: TextStyle(fontWeight: FontWeight.w600),
+                          ),
                         )
                             : null,
                       ),
@@ -446,8 +470,10 @@ class _HomePageState extends State<HomePage> {
                     alignment: Alignment.centerRight,
                     child: TextButton(
                       onPressed: () {},
-                      child: const Text('조치하기',
-                          style: TextStyle(fontWeight: FontWeight.w600)),
+                      child: const Text(
+                        '조치하기',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
                     ),
                   )
                       : null,
@@ -475,7 +501,9 @@ class _HomePageState extends State<HomePage> {
                       label: '수면',
                       icon: Icons.bedtime,
                       onPressed: () => _setMode(
-                          QuickMode.sleep, '수면 모드로 전환합니다…'),
+                        QuickMode.sleep,
+                        '수면 모드로 전환합니다…',
+                      ),
                       typeScale: typeScale,
                       compact: compact,
                     ),
@@ -485,8 +513,10 @@ class _HomePageState extends State<HomePage> {
                     child: _ModeButton(
                       label: '휴식',
                       icon: Icons.spa_outlined,
-                      onPressed: () =>
-                          _setMode(QuickMode.rest, '휴식 모드로 전환합니다…'),
+                      onPressed: () => _setMode(
+                        QuickMode.rest,
+                        '휴식 모드로 전환합니다…',
+                      ),
                       typeScale: typeScale,
                       compact: compact,
                     ),
@@ -496,8 +526,10 @@ class _HomePageState extends State<HomePage> {
                     child: _ModeButton(
                       label: '일상',
                       icon: Icons.flash_on_outlined,
-                      onPressed: () =>
-                          _setMode(QuickMode.daily, '일상 모드로 전환합니다…'),
+                      onPressed: () => _setMode(
+                        QuickMode.daily,
+                        '일상 모드로 전환합니다…',
+                      ),
                       typeScale: typeScale,
                       compact: compact,
                     ),
@@ -576,29 +608,37 @@ class _ConditionCard extends StatelessWidget {
     delta > 0 ? Colors.green : (delta < 0 ? Colors.red : Colors.grey[600]);
 
     final titleStyle = _scale(
-        Theme.of(context)
-            .textTheme
-            .titleMedium
-            ?.copyWith(fontWeight: FontWeight.w700),
-        typeScale);
-    final valueStyle = _withTabular(_scale(
+      Theme.of(context)
+          .textTheme
+          .titleMedium
+          ?.copyWith(fontWeight: FontWeight.w700),
+      typeScale,
+    );
+    final valueStyle = _withTabular(
+      _scale(
         Theme.of(context)
             .textTheme
             .headlineMedium
             ?.copyWith(fontWeight: FontWeight.w800),
-        typeScale));
-    final unitStyle = _withTabular(_scale(
+        typeScale,
+      ),
+    );
+    final unitStyle = _withTabular(
+      _scale(
         Theme.of(context)
             .textTheme
             .titleMedium
             ?.copyWith(color: Colors.grey[700]),
-        typeScale));
+        typeScale,
+      ),
+    );
     final captionStyle = _scale(
-        Theme.of(context)
-            .textTheme
-            .bodySmall
-            ?.copyWith(color: Colors.grey[700]),
-        typeScale);
+      Theme.of(context)
+          .textTheme
+          .bodySmall
+          ?.copyWith(color: Colors.grey[700]),
+      typeScale,
+    );
 
     final needBadge = (caption == '연동 필요');
 
@@ -630,12 +670,15 @@ class _ConditionCard extends StatelessWidget {
                   if (needBadge)
                     Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 2),
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.orange.withOpacity(0.15),
                         borderRadius: BorderRadius.circular(999),
                         border: Border.all(
-                            color: Colors.orange.withOpacity(0.3)),
+                          color: Colors.orange.withOpacity(0.3),
+                        ),
                       ),
                       child: const Text(
                         '연동 필요',
@@ -745,27 +788,29 @@ class _EnvTile extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundColor: color.withOpacity(0.18),
-                child: Icon(icon, color: color, size: 20),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  label,
-                  maxLines: 2,
-                  style: _scale(
-                    Theme.of(context)
-                        .textTheme
-                        .titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w700),
-                    1.0,
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 18,
+                  backgroundColor: color.withOpacity(0.18),
+                  child: Icon(icon, color: color, size: 20),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    label,
+                    maxLines: 2,
+                    style: _scale(
+                      Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w700),
+                      1.0,
+                    ),
                   ),
                 ),
-              )
-            ]),
+              ],
+            ),
             const SizedBox(height: 6),
             FittedBox(
               fit: BoxFit.scaleDown,
@@ -846,8 +891,7 @@ class _EnvTile extends StatelessWidget {
           ),
           if (trailing != null)
             ConstrainedBox(
-              constraints:
-              const BoxConstraints(minWidth: 0, maxWidth: 120),
+              constraints: const BoxConstraints(minWidth: 0, maxWidth: 120),
               child: FittedBox(fit: BoxFit.scaleDown, child: trailing),
             ),
         ],
@@ -881,10 +925,12 @@ class _ModeButton extends StatelessWidget {
           backgroundColor: c.withOpacity(0.10),
           foregroundColor: c,
           elevation: 0,
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16)),
+          shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           textStyle: TextStyle(
-              fontSize: (16 * typeScale), fontWeight: FontWeight.w700),
+            fontSize: (16 * typeScale),
+            fontWeight: FontWeight.w700,
+          ),
         ),
         onPressed: onPressed,
         child: Row(
@@ -924,14 +970,12 @@ class _NotiTile extends StatelessWidget {
       leading: CircleAvatar(
         backgroundColor:
         Theme.of(context).colorScheme.primary.withOpacity(0.12),
-        child: Icon(item.icon,
-            color: Theme.of(context).colorScheme.primary),
+        child: Icon(item.icon, color: Theme.of(context).colorScheme.primary),
       ),
       title: Text(
         item.text,
         maxLines: 3,
-        style:
-        _scale(const TextStyle(fontWeight: FontWeight.w600), typeScale),
+        style: _scale(const TextStyle(fontWeight: FontWeight.w600), typeScale),
       ),
       trailing: const Icon(Icons.chevron_right),
       onTap: () {},
@@ -949,8 +993,7 @@ void showOneShotSnackBar(BuildContext context, String text) {
     ..clearSnackBars();
   m.showSnackBar(
     SnackBar(
-      content:
-      Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
+      content: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
       duration: const Duration(milliseconds: 900),
       behavior: SnackBarBehavior.floating,
       margin: const EdgeInsets.all(12),
@@ -998,13 +1041,6 @@ Color _statusColorFor(String key, num value) {
         return Colors.orange;
       }
       return Colors.red;
-    case 'activity':
-    // 활동 시간(분): 30~90분 정도를 "좋음"으로 가정
-      if (value >= 30 && value <= 90) return Colors.green;
-      if ((value >= 15 && value < 30) || (value > 90 && value <= 120)) {
-        return Colors.orange;
-      }
-      return Colors.red;
   }
   return Colors.grey;
 }
@@ -1034,9 +1070,7 @@ _Grade _gradePM25(double x) {
 }
 
 Color _colorForGrade(_Grade g) =>
-    g == _Grade.good
-        ? Colors.green
-        : (g == _Grade.warn ? Colors.orange : Colors.red);
+    g == _Grade.good ? Colors.green : (g == _Grade.warn ? Colors.orange : Colors.red);
 
 String _greeting(DateTime now) {
   final h = now.hour;

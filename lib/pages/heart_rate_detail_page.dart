@@ -175,9 +175,11 @@ class _HeartRateDetailPageState extends HealthState<HeartRateDetailPage> {
   @override
   Widget build(BuildContext context) {
     final baseTheme = Theme.of(context);
-    // 🔹 이 페이지 안에서만 글꼴 1.12배 확대
     final scaledTheme = baseTheme.copyWith(
-      textTheme: baseTheme.textTheme.apply(fontSizeFactor: 1.12, heightFactor: 1.2,),
+      textTheme: baseTheme.textTheme.apply(
+        fontSizeFactor: 1.12,
+        heightFactor: 1.1,
+      ),
     );
 
     final appBar = AppBar(
@@ -252,14 +254,21 @@ class _HeartRateDetailPageState extends HealthState<HeartRateDetailPage> {
                   ),
                 ),
 
-              // 상단 설명: bodyMedium 사용
+              // 상단 설명: 여러 Text + SizedBox 로 문단 분리
               Text(
-                '워치/폰에 기록된 심박수 데이터를 바탕으로\n'
-                    '지난 밤 심박 상태와 최근 추세를 간단히 보여줍니다.',
+                '워치/폰에 기록된 심박수 데이터를 바탕으로',
                 style: Theme.of(context)
                     .textTheme
                     .bodyMedium
-                    ?.copyWith(color: Colors.grey[700], height: 1.35),
+                    ?.copyWith(color: Colors.grey[700], height: 1.25),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '지난 밤 심박 상태와 최근 추세를 간단히 보여줍니다.',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: Colors.grey[700], height: 1.25),
               ),
               const SizedBox(height: 8),
               Align(
@@ -284,30 +293,53 @@ class _HeartRateDetailPageState extends HealthState<HeartRateDetailPage> {
               Text(
                 '최근 7일 평균 심박수',
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w800,
                 ),
               ),
               const SizedBox(height: 4),
+              // 설명 문단도 분리
               Text(
-                '막대가 높을수록 해당 날 수면/야간 시간대의 심박수가 더 빨랐다는 뜻이에요.\n'
-                    '특정 날만 유독 높다면 그날의 컨디션(과로, 카페인, 스트레스 등)을 한 번 떠올려보세요.',
+                '막대가 높을수록 해당 날 수면/야간 시간대의 심박수가 더 빨랐다는 뜻이에요.',
                 style: Theme.of(context)
                     .textTheme
                     .bodyMedium
-                    ?.copyWith(color: Colors.grey[700], height: 1.35),
+                    ?.copyWith(color: Colors.grey[700], height: 1.25),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '특정 날만 유독 높다면 그날의 컨디션(과로, 카페인, 스트레스 등)을 한 번 떠올려보세요.',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: Colors.grey[700], height: 1.25),
               ),
               const SizedBox(height: 8),
               _Last7DaysHrChart(vm: vm),
               const SizedBox(height: 24),
 
+              // 하단 안내 문단도 분리
               Text(
-                '심박수는 개인차가 크고, 같은 사람도 그날의 컨디션에 따라 달라집니다.\n'
-                    '그래프는 “내 지난 일주일 패턴과 비교해서 어떠한지” 보는 용도로만 활용해주세요.\n'
-                    '가슴 두근거림, 어지럼증, 흉통 등 이상 증상이 반복되면 꼭 의료진과 상의하세요.',
+                '심박수는 개인차가 크고, 같은 사람도 그날의 컨디션에 따라 달라집니다.',
                 style: Theme.of(context)
                     .textTheme
                     .bodyMedium
-                    ?.copyWith(color: Colors.grey[700], height: 1.35),
+                    ?.copyWith(color: Colors.grey[700], height: 1.25),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '그래프는 “내 지난 일주일 패턴과 비교해서 어떠한지” 보는 용도로만 활용해주세요.',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: Colors.grey[700], height: 1.25),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '가슴 두근거림, 어지럼증, 흉통 등 이상 증상이 반복되면 꼭 의료진과 상의하세요.',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: Colors.grey[700], height: 1.25),
               ),
             ],
           ),
@@ -538,12 +570,19 @@ class _NightHrChart extends StatelessWidget {
         ),
         const SizedBox(height: 4),
         Text(
-          '곡선이 부드럽게 유지되면 밤새 심장이 비교적 안정적으로 뛴다는 뜻이에요.\n'
-              '특정 구간에서만 갑자기 치솟거나 떨어지는 패턴이 반복되면, 그 시간대의 생활 패턴을 한 번 살펴보세요.',
+          '곡선이 부드럽게 유지되면 밤새 심장이 비교적 안정적으로 뛴다는 뜻이에요.',
           style: Theme.of(context)
               .textTheme
               .bodyMedium
-              ?.copyWith(color: Colors.grey[700], height: 1.35),
+              ?.copyWith(color: Colors.grey[700], height: 1.25),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '특정 구간에서만 갑자기 치솟거나 떨어지는 패턴이 반복되면, 그 시간대의 생활 패턴을 한 번 살펴보세요.',
+          style: Theme.of(context)
+              .textTheme
+              .bodyMedium
+              ?.copyWith(color: Colors.grey[700], height: 1.25),
         ),
         const SizedBox(height: 8),
         SizedBox(
@@ -716,10 +755,10 @@ class _Last7DaysHrChart extends StatelessWidget {
             horizontalInterval: 10,
           ),
           titlesData: FlTitlesData(
-            topTitles:
-            const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-            rightTitles:
-            const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            topTitles: const AxisTitles(
+                sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(
+                sideTitles: SideTitles(showTitles: false)),
             bottomTitles: AxisTitles(
               sideTitles: SideTitles(
                 showTitles: true,

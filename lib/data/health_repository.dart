@@ -88,14 +88,20 @@ class HealthRepositoryImpl implements HealthRepository {
     final startOfYesterday = startOfToday.subtract(const Duration(days: 1));
     final sevenDaysAgo = startOfToday.subtract(const Duration(days: 7));
 
+    // "지난 밤" 윈도우: 어제 18:00 ~ 오늘 12:00 (수면/심박 상세 페이지와 동일 기준)
+    final winAnchor = startOfToday;
+    final winStart = winAnchor.subtract(const Duration(hours: 6));
+    final winEnd   = winAnchor.add(const Duration(hours: 12));
+
     // ---- 1) 지난 밤 수면점수(고급) : 어제 18:00 ~ 오늘 12:00
     final int? sleepScore = await _computeSleepScoreAdvanced(now);
 
     // ---- 2) 어제 평균들 (자정~자정)
-    final double? hrAvgYesterday = await _avgNum(
+    // 심박수는 "지난 밤" 기준(어제 18:00 ~ 오늘 12:00)
+    final double? hrAvgLastNight = await _avgNum(
       HealthDataType.HEART_RATE,
-      startOfYesterday,
-      startOfToday,
+      winStart,
+      winEnd,
     );
     final double? hrvRmssdYesterday = await _avgNum(
       HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
@@ -109,11 +115,47 @@ class HealthRepositoryImpl implements HealthRepository {
     );
 
     // ---- 3) 7일 평균(베이스라인)
-    final double? hrAvg7d = await _avgNum(
-      HealthDataType.HEART_RATE,
-      sevenDaysAgo,
-      startOfToday,
-    );
+    // (1) 심박수: "지난 7번의 밤" 평균 (각 밤의 평균을 다시 평균)
+    //   - 기준 밤: 오늘 카드가 보여주는 "지난 밤"은 제외
+    //   - 앵커: 오늘 자정 기준으로 1~7일 전까지
+    double? hrAvg7Nights;
+    {
+      double sumOfNightAvgs = 0;
+      int nightCount = 0;
+
+      for (int i = 1; i <= 7; i++) {
+        // i=1 → 어제 밤, i=7 → 7일 전 밤
+        final anchor = startOfToday.subtract(Duration(days: i));
+        final s = anchor.subtract(const Duration(hours: 6));  // 18:00
+        final e = anchor.add(const Duration(hours: 12));      // 다음날 12:00
+
+        final pts = await _health.getHealthDataFromTypes(
+          types: const [HealthDataType.HEART_RATE],
+          startTime: s,
+          endTime: e,
+        );
+
+        double sum = 0;
+        int n = 0;
+        for (final p in pts) {
+          final v = _asDouble(p.value);
+          if (v == null) continue;
+          sum += v;
+          n++;
+        }
+
+        if (n > 0) {
+          sumOfNightAvgs += (sum / n); // 그 밤의 평균
+          nightCount++;
+        }
+      }
+
+      if (nightCount > 0) {
+        hrAvg7Nights = sumOfNightAvgs / nightCount;
+      }
+    }
+
+// (2) HRV / 호흡수는 기존처럼 자정~자정 7일 평균 유지
     final double? hrvAvg7d = await _avgNum(
       HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
       sevenDaysAgo,
@@ -130,8 +172,8 @@ class HealthRepositoryImpl implements HealthRepository {
       // 수면 점수는 일단 추세 0 (MVP)
       'sleep': 0,
       'hr': _deltaByRatio(
-        hrAvgYesterday,
-        hrAvg7d,
+        hrAvgLastNight,
+        hrAvg7Nights,
         higherIsBetter: false,
       ),
       'hrv': _deltaByRatio(
@@ -148,7 +190,7 @@ class HealthRepositoryImpl implements HealthRepository {
 
     return DashboardSnapshot(
       sleepScore: sleepScore,
-      heartRateAvg: hrAvgYesterday?.round(),
+      heartRateAvg: hrAvgLastNight?.round(),
       hrvRmssd: hrvRmssdYesterday?.round(),
       respirationNight: respYesterday,
       deltaVs7d: delta,
