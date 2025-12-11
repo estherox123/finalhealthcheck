@@ -4,6 +4,9 @@
 import 'package:flutter/material.dart';
 
 import '../data/iot/device_control_controller.dart';
+import '../data/iot/home_assistant_api.dart';
+import '../data/iot/home_assistant_options.dart';
+import '../data/iot/iot_api.dart';
 import '../data/iot/iot_repository.dart';
 import '../data/iot/mock_iot_api.dart';
 import '../data/iot/models.dart';
@@ -20,9 +23,17 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
   @override
   void initState() {
     super.initState();
-    _c = DeviceControlController(IotRepository(MockIotApi()));
+    _c = DeviceControlController(IotRepository(_createApi()));
     _c.addListener(_onChange);
     _c.init();
+  }
+
+  IotApi _createApi() {
+    final opts = HomeAssistantOptions.fromEnv();
+    if (opts.isConfigured) {
+      return HomeAssistantApi(options: opts);
+    }
+    return MockIotApi();
   }
 
   void _onChange() => setState(() {});
