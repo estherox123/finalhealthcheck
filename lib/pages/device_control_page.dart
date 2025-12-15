@@ -30,10 +30,14 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
 
   IotApi _createApi() {
     final opts = HomeAssistantOptions.fromEnv();
-    if (opts.isConfigured) {
-      return HomeAssistantApi(options: opts);
+    if (!opts.isConfigured) {
+      // 더 이상 더미(Mock)를 사용하지 않고, 환경설정 누락 시 바로 알리기.
+      throw StateError(
+        'Home Assistant 연동 정보가 없습니다. '
+        'flutter run 시 --dart-define=HA_URL, HA_TOKEN, HA_AC_ENTITY를 설정하세요.',
+      );
     }
-    return MockIotApi();
+    return HomeAssistantApi(options: opts);
   }
 
   void _onChange() => setState(() {});

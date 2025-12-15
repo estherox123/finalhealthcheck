@@ -37,7 +37,11 @@ class HomeAssistantApi implements IotApi {
     throw Exception('HA state 조회 실패(${res.statusCode}) for $entityId');
   }
 
-  Future<void> _callService(String domain, String service, Map<String, dynamic> data) async {
+  /// HA 서비스 호출 헬퍼.
+  /// 대부분의 서비스는 변경된 엔티티 리스트(JSON 배열)를 반환하므로,
+  /// 이를 그대로 반환해 추가적인 상태 조회(GET)를 줄이는 데 사용한다.
+  Future<List<dynamic>> _callService(
+      String domain, String service, Map<String, dynamic> data) async {
     final res = await _client.post(
       Uri.parse('${_base}api/services/$domain/$service'),
       headers: _headers,
@@ -46,23 +50,29 @@ class HomeAssistantApi implements IotApi {
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception('HA service 실패($domain/$service): ${res.body}');
     }
+    if (res.body.isEmpty) return const [];
+    final decoded = jsonDecode(res.body);
+    if (decoded is List) return decoded;
+    return const [];
   }
 
   /* ----------------------------- Snapshot ----------------------------- */
-  @override
-  Future<IotSnapshot> fetchSnapshot() async {
-    final aircon = await _fetchAircon();
-    final hrv = await _fetchHrv();
-    final blinds = await _fetchBlinds();
-    final lights = await _fetchLights();
+@override
+Future<IotSnapshot> fetchSnapshot() async {
+  final results = await Future.wait([
+    _fetchAircon(),
+    _fetchHrv(),
+    _fetchBlinds(),
+    _fetchLights(),
+  ]);
 
-    return IotSnapshot(
-      aircon: aircon,
-      hrv: hrv,
-      blinds: blinds,
-      lights: lights,
-    );
-  }
+  return IotSnapshot(
+    aircon: results[0] as AirconState,
+    hrv: results[1] as HrvState,
+    blinds: results[2] as BlindsStatus,
+    lights: results[3] as LightsState,
+  );
+}
 
   Future<AirconState> _fetchAircon() async {
     final data = await _getState(options.acEntityId);
@@ -121,29 +131,32 @@ class HomeAssistantApi implements IotApi {
   /* ----------------------------- Aircon ----------------------------- */
   @override
   Future<AirconState> setAirconPower(bool on) async {
-    await _callService('climate', on ? 'turn_on' : 'turn_off', {
+    final result = await _callService('climate', on ? 'turn_on' : 'turn_off', {
       'entity_id': options.acEntityId,
     });
-    return _fetchAircon();
+    final fromService = _airconFromServiceResult(result);
+    return fromService ?? _fetchAircon();
   }
 
   @override
   Future<AirconState> setAirconTemp(int temp) async {
     final t = temp.clamp(16, 30);
-    await _callService('climate', 'set_temperature', {
+    final result = await _callService('climate', 'set_temperature', {
       'entity_id': options.acEntityId,
       'temperature': t,
     });
-    return _fetchAircon();
+    final fromService = _airconFromServiceResult(result);
+    return fromService ?? _fetchAircon();
   }
 
   @override
   Future<AirconState> setAirconMode(AcMode mode) async {
-    await _callService('climate', 'set_hvac_mode', {
+    final result = await _callService('climate', 'set_hvac_mode', {
       'entity_id': options.acEntityId,
       'hvac_mode': _acToHvacMode(mode),
     });
-    return _fetchAircon();
+    final fromService = _airconFromServiceResult(result);
+    return fromService ?? _fetchAircon();
   }
 
   @override
@@ -206,6 +219,27 @@ class HomeAssistantApi implements IotApi {
   }
 
   /* ----------------------------- Helpers ----------------------------- */
+  /// service 호출 응답(List)에서 에어컨 상태를 추출해 AirconState로 변환.
+  AirconState? _airconFromServiceResult(List<dynamic> result) {
+    if (result.isEmpty) return null;
+    final first = result.first;
+    if (first is! Map) return null;
+    final map = Map<String, dynamic>.from(first as Map);
+    final attrs = (map['attributes'] as Map?) ?? {};
+    final hvacMode =
+        (attrs['hvac_mode'] ?? attrs['preset_mode'] ?? '') as String? ?? 'off';
+    final temp = (attrs['temperature'] ?? attrs['target_temp_high'] ?? attrs['target_temp_low'])
+            as num? ??
+        AirconState.initial.temperature;
+    final mode = _hvacModeToAc(hvacMode);
+    final isOn = (map['state'] as String? ?? 'off') != 'off';
+    return AirconState(
+      isOn: isOn,
+      temperature: temp.round().clamp(16, 30),
+      mode: mode,
+      timerHours: _lastTimerHours,
+    );
+  }
   AcMode _hvacModeToAc(String hvacMode) {
     switch (hvacMode) {
       case 'heat':

@@ -22,7 +22,7 @@ class HomeAssistantOptions {
         baseUrl: const String.fromEnvironment('HA_URL', defaultValue: ''),
         token: const String.fromEnvironment('HA_TOKEN', defaultValue: ''),
         acEntityId:
-            const String.fromEnvironment('HA_AC_ENTITY', defaultValue: ''),
+            const String.fromEnvironment('HA_AC_ENTITY', defaultValue: 'climate.eeokeon'),
         hrvEntityId:
             const String.fromEnvironment('HA_HRV_ENTITY', defaultValue: ''),
         blindsEntityId:
