@@ -1,18 +1,18 @@
 // lib/pages/emergency_contacts_page.dart
-/// 긴급 전화 번호 페이지. 119/담당병원/보호자. 통화 연동 기능 미개발.
+/// 긴급 전화 번호 페이지. 119/담당병원/보호자. (시니어 친화적 카드 디자인 적용)
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'contact_settings_page.dart';
-import '../phone_format.dart'; // ✅ normalizePhoneDigits / formatKoreanPhone / Formatter
+import '../phone_format.dart'; // normalizePhoneDigits / formatKoreanPhone
 
 /// SharedPreferences 키 상수
 const _kHospitalName = 'e_hospitalName';
-const _kHospitalPhone = 'e_hospitalPhone';   // 숫자만 저장
+const _kHospitalPhone = 'e_hospitalPhone';
 const _kGuardianName = 'e_guardianName';
-const _kGuardianPhone = 'e_guardianPhone';   // 숫자만 저장
+const _kGuardianPhone = 'e_guardianPhone';
 
 class EmergencyContactPage extends StatefulWidget {
   const EmergencyContactPage({super.key});
@@ -22,10 +22,10 @@ class EmergencyContactPage extends StatefulWidget {
 }
 
 class _EmergencyContactPageState extends State<EmergencyContactPage> {
-  String _hospitalNameDisplay = "담당 병원 (설정 필요)";
-  String _hospitalPhoneDisplay = "";   // 내부 저장은 숫자-only
-  String _guardianNameDisplay = "보호자 (설정 필요)";
-  String _guardianPhoneDisplay = "";   // 내부 저장은 숫자-only
+  String _hospitalNameDisplay = "";
+  String _hospitalPhoneDisplay = "";
+  String _guardianNameDisplay = "";
+  String _guardianPhoneDisplay = "";
 
   bool _isLoading = true;
 
@@ -40,11 +40,9 @@ class _EmergencyContactPageState extends State<EmergencyContactPage> {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
-      _hospitalNameDisplay =
-          prefs.getString(_kHospitalName) ?? "담당 병원 (설정 필요)";
+      _hospitalNameDisplay = prefs.getString(_kHospitalName) ?? "";
       _hospitalPhoneDisplay = prefs.getString(_kHospitalPhone) ?? "";
-      _guardianNameDisplay =
-          prefs.getString(_kGuardianName) ?? "보호자 (설정 필요)";
+      _guardianNameDisplay = prefs.getString(_kGuardianName) ?? "";
       _guardianPhoneDisplay = prefs.getString(_kGuardianPhone) ?? "";
       _isLoading = false;
     });
@@ -52,13 +50,10 @@ class _EmergencyContactPageState extends State<EmergencyContactPage> {
 
   Future<void> _saveContactInfoToPrefs(Map<String, String> data) async {
     final prefs = await SharedPreferences.getInstance();
-    // 이름은 trim, 번호는 숫자-only로 정규화 저장
     await prefs.setString(_kHospitalName, (data['hospitalName'] ?? '').trim());
-    await prefs.setString(
-        _kHospitalPhone, normalizePhoneDigits(data['hospitalPhone'] ?? ''));
+    await prefs.setString(_kHospitalPhone, normalizePhoneDigits(data['hospitalPhone'] ?? ''));
     await prefs.setString(_kGuardianName, (data['guardianName'] ?? '').trim());
-    await prefs.setString(
-        _kGuardianPhone, normalizePhoneDigits(data['guardianPhone'] ?? ''));
+    await prefs.setString(_kGuardianPhone, normalizePhoneDigits(data['guardianPhone'] ?? ''));
   }
 
   Future<void> _navigateToSettings() async {
@@ -66,12 +61,9 @@ class _EmergencyContactPageState extends State<EmergencyContactPage> {
       context,
       MaterialPageRoute(
         builder: (_) => ContactSettingsPage(
-          initialHospitalName:
-          _hospitalNameDisplay.contains("설정 필요") ? "" : _hospitalNameDisplay,
-          // 입력창엔 보기 좋게 포맷 넣고 시작 (사용자가 편집하면 Formatter가 유지)
+          initialHospitalName: _hospitalNameDisplay,
           initialHospitalPhone: formatKoreanPhone(_hospitalPhoneDisplay),
-          initialGuardianName:
-          _guardianNameDisplay.contains("설정 필요") ? "" : _guardianNameDisplay,
+          initialGuardianName: _guardianNameDisplay,
           initialGuardianPhone: formatKoreanPhone(_guardianPhoneDisplay),
         ),
       ),
@@ -81,37 +73,39 @@ class _EmergencyContactPageState extends State<EmergencyContactPage> {
     if (result != null) {
       await _saveContactInfoToPrefs(result);
       setState(() {
-        _hospitalNameDisplay = result['hospitalName']!.isNotEmpty
-            ? result['hospitalName']!.trim()
-            : "담당 병원 (설정 필요)";
+        _hospitalNameDisplay = result['hospitalName']!.trim();
         _hospitalPhoneDisplay = normalizePhoneDigits(result['hospitalPhone'] ?? '');
-        _guardianNameDisplay = result['guardianName']!.isNotEmpty
-            ? result['guardianName']!.trim()
-            : "보호자 (설정 필요)";
+        _guardianNameDisplay = result['guardianName']!.trim();
         _guardianPhoneDisplay = normalizePhoneDigits(result['guardianPhone'] ?? '');
       });
 
-      // 저장 안내
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('연락처 설정이 저장되었습니다.')),
+        const SnackBar(content: Text('연락처 설정이 저장되었습니다.'), duration: Duration(seconds: 1)),
       );
     }
   }
 
   void _handleButtonPress(String actionType, String? name, String? digitsRaw) {
-    // (전화 기능은 추후 추가) — 지금은 안내만
-    final pretty = digitsRaw == null || digitsRaw.isEmpty
-        ? "번호 미설정"
-        : formatKoreanPhone(digitsRaw);
+    if (actionType != "119" && (digitsRaw == null || digitsRaw.isEmpty)) {
+      _navigateToSettings(); // 번호 없으면 설정 화면으로 이동
+      return;
+    }
 
+    final pretty = digitsRaw == null || digitsRaw.isEmpty ? "번호 없음" : formatKoreanPhone(digitsRaw);
     final msg = (actionType == "119")
-        ? "119 버튼이 눌렸습니다. (전화 기능 구현 필요)"
-        : "$name 버튼이 눌렸습니다. ($pretty) (전화 기능 구현 필요)";
+        ? "🚑 119로 전화를 겁니다."
+        : "📞 $name($pretty)에게 전화를 겁니다.";
 
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    // 실제 전화 기능은 url_launcher 연동 필요
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg, style: const TextStyle(fontSize: 16)),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
-  // 길게 누르면 전화번호 복사 (보기용 포맷으로 복사)
   void _handleLongPressCopy(String? digitsRaw) {
     if (digitsRaw == null || digitsRaw.isEmpty) return;
     final pretty = formatKoreanPhone(digitsRaw);
@@ -123,178 +117,188 @@ class _EmergencyContactPageState extends State<EmergencyContactPage> {
 
   @override
   Widget build(BuildContext context) {
-    final appBar = AppBar(
-      title: const Text('응급 연락'),
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.settings_outlined),
-          onPressed: _isLoading ? null : _navigateToSettings,
-          tooltip: '설정',
-        ),
-      ],
-    );
-
-    if (_isLoading) {
-      return Scaffold(
-        appBar: appBar,
-        body: const Center(child: CircularProgressIndicator()),
-      );
-    }
-
     return Scaffold(
-      appBar: appBar,
-      body: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            _EmergencyButton(
-              label: '119 응급실',
-              icon: Icons.local_hospital_outlined,
-              backgroundColor: Colors.red.shade700,
-              onPressed: () => _handleButtonPress("119", null, null),
-              onLongPress: null,
-              enabled: true,
-              semanticsLabel: '119 응급실로 전화',
-              subLabel: null,
-            ),
-            const SizedBox(height: 24),
+      backgroundColor: const Color(0xFFF5F7FA), // 배경색 통일
+      appBar: AppBar(
+        title: const Text('응급 연락', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
+        backgroundColor: const Color(0xFFF5F7FA),
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.black87),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_outlined, size: 28),
+            onPressed: _isLoading ? null : _navigateToSettings,
+            tooltip: '연락처 설정',
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        children: <Widget>[
+          const SizedBox(height: 10),
+          const Text(
+            "위급한 상황인가요?\n버튼을 누르면 바로 연결됩니다.",
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, height: 1.3, color: Colors.black87),
+          ),
+          const SizedBox(height: 30),
 
-            _EmergencyButton(
-              label: _hospitalNameDisplay,
-              subLabel: _hospitalPhoneDisplay.isNotEmpty
-                  ? formatKoreanPhone(_hospitalPhoneDisplay)
-                  : null,
-              icon: Icons.business_outlined,
-              backgroundColor: Colors.green.shade700,
-              onPressed: _hospitalPhoneDisplay.isNotEmpty
-                  ? () => _handleButtonPress(
-                "hospital",
-                _hospitalNameDisplay,
-                _hospitalPhoneDisplay,
-              )
-                  : null,
-              onLongPress: _hospitalPhoneDisplay.isNotEmpty
-                  ? () => _handleLongPressCopy(_hospitalPhoneDisplay)
-                  : null,
-              enabled: _hospitalPhoneDisplay.isNotEmpty,
-              semanticsLabel: _hospitalPhoneDisplay.isNotEmpty
-                  ? '담당 병원 ${_hospitalNameDisplay} 전화 ${formatKoreanPhone(_hospitalPhoneDisplay)}'
-                  : '담당 병원 연락처 설정 필요',
-            ),
-            const SizedBox(height: 24),
+          // 1. 119 버튼 (가장 크게, 빨간색 강조)
+          _EmergencyCard(
+            title: '119 응급실',
+            subtitle: '화재 / 구조 / 구급',
+            icon: Icons.local_hospital_rounded,
+            color: Colors.red,
+            isPrimary: true, // 강조 스타일
+            onTap: () => _handleButtonPress("119", null, null),
+          ),
+          const SizedBox(height: 24),
 
-            _EmergencyButton(
-              label: _guardianNameDisplay,
-              subLabel: _guardianPhoneDisplay.isNotEmpty
-                  ? formatKoreanPhone(_guardianPhoneDisplay)
-                  : null,
-              icon: Icons.person_search_outlined,
-              backgroundColor: Colors.blue.shade700,
-              onPressed: _guardianPhoneDisplay.isNotEmpty
-                  ? () => _handleButtonPress(
-                "guardian",
-                _guardianNameDisplay,
-                _guardianPhoneDisplay,
-              )
-                  : null,
-              onLongPress: _guardianPhoneDisplay.isNotEmpty
-                  ? () => _handleLongPressCopy(_guardianPhoneDisplay)
-                  : null,
-              enabled: _guardianPhoneDisplay.isNotEmpty,
-              semanticsLabel: _guardianPhoneDisplay.isNotEmpty
-                  ? '보호자 ${_guardianNameDisplay} 전화 ${formatKoreanPhone(_guardianPhoneDisplay)}'
-                  : '보호자 연락처 설정 필요',
-            ),
-          ],
-        ),
+          // 2. 구분선
+          Row(
+            children: [
+              const Expanded(child: Divider(color: Colors.grey)),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text("비상 연락망", style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+              ),
+              const Expanded(child: Divider(color: Colors.grey)),
+            ],
+          ),
+          const SizedBox(height: 24),
+
+          // 3. 담당 병원
+          _EmergencyCard(
+            title: _hospitalNameDisplay.isEmpty ? "담당 병원" : _hospitalNameDisplay,
+            subtitle: _hospitalPhoneDisplay.isEmpty
+                ? "눌러서 번호를 저장하세요"
+                : formatKoreanPhone(_hospitalPhoneDisplay),
+            icon: Icons.business_rounded,
+            color: Colors.green,
+            isSet: _hospitalPhoneDisplay.isNotEmpty,
+            onTap: () => _handleButtonPress("hospital", _hospitalNameDisplay, _hospitalPhoneDisplay),
+            onLongPress: () => _handleLongPressCopy(_hospitalPhoneDisplay),
+          ),
+          const SizedBox(height: 16),
+
+          // 4. 보호자
+          _EmergencyCard(
+            title: _guardianNameDisplay.isEmpty ? "보호자" : _guardianNameDisplay,
+            subtitle: _guardianPhoneDisplay.isEmpty
+                ? "눌러서 번호를 저장하세요"
+                : formatKoreanPhone(_guardianPhoneDisplay),
+            icon: Icons.person_rounded,
+            color: Colors.blue,
+            isSet: _guardianPhoneDisplay.isNotEmpty,
+            onTap: () => _handleButtonPress("guardian", _guardianNameDisplay, _guardianPhoneDisplay),
+            onLongPress: () => _handleLongPressCopy(_guardianPhoneDisplay),
+          ),
+
+          const SizedBox(height: 40),
+        ],
       ),
     );
   }
 }
 
-class _EmergencyButton extends StatelessWidget {
-  final String label;
-  final String? subLabel; // 보기용 포맷 문자열(예: 010-1234-5678)
-  final IconData icon;
-  final Color backgroundColor;
-  final VoidCallback? onPressed;
-  final VoidCallback? onLongPress;
-  final bool enabled;
-  final String? semanticsLabel;
+// ---------------- UI 컴포넌트 ----------------
 
-  const _EmergencyButton({
-    required this.label,
-    this.subLabel,
+class _EmergencyCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color color;
+  final bool isPrimary; // 119 강조용
+  final bool isSet;     // 번호 설정 여부
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+
+  const _EmergencyCard({
+    required this.title,
+    required this.subtitle,
     required this.icon,
-    required this.backgroundColor,
-    required this.onPressed,
-    required this.onLongPress,
-    required this.enabled,
-    this.semanticsLabel,
+    required this.color,
+    this.isPrimary = false,
+    this.isSet = true,
+    required this.onTap,
+    this.onLongPress,
   });
 
   @override
   Widget build(BuildContext context) {
-    final ButtonStyle style = ElevatedButton.styleFrom(
-      minimumSize: const Size(double.infinity, 90),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      elevation: 3,
-      foregroundColor: Colors.white,
-    ).copyWith(
-      backgroundColor: MaterialStateProperty.resolveWith((states) {
-        final base = backgroundColor;
-        if (states.contains(MaterialState.disabled)) {
-          return base.withOpacity(0.45);
-        }
-        return base;
-      }),
-      foregroundColor: MaterialStateProperty.resolveWith((states) {
-        if (states.contains(MaterialState.disabled)) {
-          return Colors.white.withOpacity(0.7);
-        }
-        return Colors.white;
-      }),
-    );
+    // 119(Primary)는 붉은색 틴트 배경, 나머지는 흰색 배경
+    final bgColor = isPrimary ? Colors.red[50] : Colors.white;
+    // 설정 안된 상태면 흐리게
+    final fgColor = isSet ? color : Colors.grey;
+    final titleColor = isSet ? Colors.black87 : Colors.grey;
+    final subColor = isSet ? Colors.grey[700] : Colors.orangeAccent;
 
-    final bool showSub = subLabel != null && subLabel!.isNotEmpty;
-
-    return Semantics(
-      button: true,
-      label: semanticsLabel ?? label,
-      enabled: enabled,
-      child: ElevatedButton(
-        style: style,
-        onPressed: enabled ? onPressed : null,
-        onLongPress: enabled ? onLongPress : null,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+    return InkWell(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      borderRadius: BorderRadius.circular(24),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(24),
+          border: isPrimary ? Border.all(color: Colors.red.withOpacity(0.2), width: 1.5) : null,
+          boxShadow: [
+            BoxShadow(
+              color: color.withOpacity(isPrimary ? 0.15 : 0.08),
+              blurRadius: 15,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Row(
           children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 28),
-                const SizedBox(width: 12),
-                Flexible(
-                  child: Text(
-                    label,
-                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                    textAlign: TextAlign.center,
+            // 아이콘 원형 배경
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: isSet ? color.withOpacity(0.15) : Colors.grey[100],
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: fgColor, size: 32),
+            ),
+            const SizedBox(width: 20),
+
+            // 텍스트 영역
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: titleColor,
+                    ),
+                    maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                ),
-              ],
-            ),
-            if (showSub) ...[
-              const SizedBox(height: 5),
-              Text(
-                subLabel!,
-                style: const TextStyle(fontSize: 15),
-                textAlign: TextAlign.center,
+                  const SizedBox(height: 6),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: subColor,
+                      fontWeight: isSet ? FontWeight.w500 : FontWeight.bold,
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
+
+            // 전화기 아이콘 (설정된 경우만)
+            if (isSet)
+              Icon(Icons.call_rounded, color: color.withOpacity(0.8), size: 28)
+            else
+              const Icon(Icons.edit_rounded, color: Colors.grey, size: 24),
           ],
         ),
       ),

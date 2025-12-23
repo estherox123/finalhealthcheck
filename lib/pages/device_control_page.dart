@@ -1,14 +1,11 @@
 // lib/pages/device_control_page.dart
-/// 기기 제어 페이지. IoT 연동 필요.
 
 import 'package:flutter/material.dart';
-
 import '../data/iot/device_control_controller.dart';
 import '../data/iot/home_assistant_api.dart';
 import '../data/iot/home_assistant_options.dart';
 import '../data/iot/iot_api.dart';
 import '../data/iot/iot_repository.dart';
-import '../data/iot/mock_iot_api.dart';
 import '../data/iot/models.dart';
 
 class DeviceControlPage extends StatefulWidget {
@@ -24,27 +21,18 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
   void initState() {
     super.initState();
     _c = DeviceControlController(IotRepository(_createApi()));
-    _c.addListener(_onChange);
+    _c.addListener(() => setState(() {}));
     _c.init();
   }
 
   IotApi _createApi() {
     final opts = HomeAssistantOptions.fromEnv();
     if (!opts.isConfigured) {
-      // 더 이상 더미(Mock)를 사용하지 않고, 환경설정 누락 시 바로 알리기.
       throw StateError(
-        'Home Assistant 연동 정보가 없습니다. '
-        'flutter run 시 --dart-define=HA_URL, HA_TOKEN, HA_AC_ENTITY를 설정하세요.',
+        'Home Assistant 연동 정보가 없습니다. flutter run 시 환경변수를 설정하세요.',
       );
     }
     return HomeAssistantApi(options: opts);
-  }
-
-  void _onChange() => setState(() {});
-  @override
-  void dispose() {
-    _c.removeListener(_onChange);
-    super.dispose();
   }
 
   @override
@@ -53,35 +41,36 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
     final loading = _c.status != IotStatus.ready;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('기기 제어')),
+      backgroundColor: const Color(0xFFF5F7FA),
+      appBar: AppBar(
+        title: const Text('기기 제어', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: const Color(0xFFF5F7FA),
+        elevation: 0,
+        foregroundColor: Colors.black,
+      ),
       body: RefreshIndicator(
         onRefresh: () => _c.init(),
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
           children: [
-            // ================= 에어컨 =================
             _SectionTitle('에어컨'),
             _AirconCard(
               state: snap.aircon,
               onToggle: _c.toggleAc,
-              onTempDelta: _c.acTempDelta,
+              onTempSlider: _c.setTargetTemperature,
               onSetMode: _c.setAcMode,
+              onSetFanSpeed: _c.setAcFanSpeed,
               onSetTimer: _c.setAcTimer,
               loading: loading,
             ),
-            const SizedBox(height: 16),
-
-            // ========== 환기(무덕트, 에어패스) ==========
-            // ※ 백엔드 변경 없이 기존 HRV on/off 상태 재사용
+            const SizedBox(height: 24),
             _SectionTitle('환기'),
             _AirpassCard(
               isOn: snap.hrv.isOn,
               onToggle: _c.toggleHrv,
               loading: loading,
             ),
-            const SizedBox(height: 16),
-
-            // ================= 블라인드 =================
+            const SizedBox(height: 24),
             _SectionTitle('전동 블라인드'),
             _BlindsCard(
               status: snap.blinds,
@@ -90,9 +79,7 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
               onClose: () => _c.setBlinds(BlindsStatus.close),
               loading: loading,
             ),
-            const SizedBox(height: 16),
-
-            // ================== 조명 ===================
+            const SizedBox(height: 24),
             _SectionTitle('조명'),
             _LightsColumn(
               rooms: const ['거실', '침실', '주방'],
@@ -108,322 +95,226 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
   }
 }
 
-/* --------------------------- 공통 타이틀 --------------------------- */
 class _SectionTitle extends StatelessWidget {
   final String text;
   const _SectionTitle(this.text);
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
+    padding: const EdgeInsets.only(left: 4, bottom: 12),
     child: Text(
       text,
-      style: Theme.of(context)
-          .textTheme
-          .titleLarge
-          ?.copyWith(fontWeight: FontWeight.w800),
+      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
     ),
   );
 }
 
-/* ================================ 에어컨 ================================ */
-
+// ================================ [1] 에어컨 카드 (기존 유지) ================================
 class _AirconCard extends StatelessWidget {
   final AirconState state;
   final VoidCallback onToggle;
-  final void Function(int delta) onTempDelta;
-  final void Function(AcMode mode) onSetMode;
-  final void Function(int hours) onSetTimer;
+  final void Function(double) onTempSlider;
+  final void Function(AcMode) onSetMode;
+  final void Function(AcFanSpeed) onSetFanSpeed;
+  final void Function(int) onSetTimer;
   final bool loading;
 
-  const _AirconCard({
-    required this.state,
-    required this.onToggle,
-    required this.onTempDelta,
-    required this.onSetMode,
-    required this.onSetTimer,
-    required this.loading,
-  });
+  const _AirconCard({required this.state, required this.onToggle, required this.onTempSlider, required this.onSetMode, required this.onSetFanSpeed, required this.onSetTimer, required this.loading});
 
   @override
   Widget build(BuildContext context) {
     final bool on = state.isOn;
-    final int temp = state.temperature;
-    final AcMode mode = state.mode;
-    final int timer = state.timerHours;
+    final bgColor = on ? const Color(0xFFEBF7F8) : Colors.white;
 
-    return _Card(
-      color: Colors.blue,
+    return Container(
+      decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(24), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15, offset: const Offset(0, 5))]),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _HeaderRow(
-            icon: Icons.ac_unit,
-            color: Colors.blue,
-            title: '에어컨',
-            trailing: _PrimaryButton(
-              label: on ? '켜짐' : '꺼짐',
-              onPressed: loading ? null : onToggle,
-              active: on,
-              color: Colors.blue,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 20, 20, 10),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(on ? state.mode.label : '꺼짐', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: on ? Colors.black87 : Colors.grey)),
+                  if (!on) ...[const SizedBox(height: 4), Text("실내 ${state.currentTemperature}°C", style: const TextStyle(fontSize: 13, color: Colors.grey))]
+                ]),
+                _PowerButton(on: on, onPressed: loading ? null : onToggle),
+              ],
             ),
           ),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 180),
-            child: on
-                ? Column(
-              key: const ValueKey('ac-on'),
-              children: [
-                const SizedBox(height: 8),
-                _TempControlRow(
-                  temp: temp,
-                  onMinus: loading ? null : () => onTempDelta(-1),
-                  onPlus: loading ? null : () => onTempDelta(1),
-                  color: Colors.blue,
+          if (on) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+              child: Column(children: [
+                Text("희망 온도", style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+                const SizedBox(height: 4),
+                Text("${state.temperature}°C", style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w300, color: Colors.black87, letterSpacing: -1.5)),
+                const SizedBox(height: 10),
+                SliderTheme(
+                  data: SliderThemeData(trackHeight: 6, activeTrackColor: const Color(0xFF4A6AFF), inactiveTrackColor: const Color(0xFFD1D9FF), thumbColor: const Color(0xFF4A6AFF), overlayColor: const Color(0xFF4A6AFF).withOpacity(0.1), thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 10)),
+                  child: Slider(value: state.temperature.toDouble(), min: 18, max: 30, divisions: 12, onChanged: loading ? null : onTempSlider),
                 ),
-                const SizedBox(height: 12),
-                _ModeChips<AcMode>(
-                  label: '모드',
-                  value: mode,
-                  items: const {
-                    AcMode.cool: '냉방',
-                    AcMode.heat: '난방',
-                    AcMode.fan: '송풍',
-                  },
-                  onSelected: loading ? null : onSetMode,
-                ),
-                const SizedBox(height: 12),
-                _TimerGrid2x2(
-                  value: timer, // 0/1/2/4
-                  onSelected: loading ? null : onSetTimer,
-                  color: Colors.blue,
-                ),
-              ],
-            )
-                : const SizedBox(height: 4, key: ValueKey('ac-off')),
-          ),
+              ]),
+            ),
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(children: [
+                Expanded(child: _ControlBox(title: "운전 모드", icon: _getModeIcon(state.mode), value: state.mode.label, color: const Color(0xFFE3F2FD), onTap: () => _showModePicker(context))),
+                const SizedBox(width: 12),
+                Expanded(child: _ControlBox(title: "바람 세기", icon: Icons.wind_power, value: _fanSpeedToString(state.fanSpeed), color: const Color(0xFFE0F2F1), onTap: () => _showFanSpeedPicker(context))),
+              ]),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
+              child: Column(children: [
+                Row(children: [
+                  const Icon(Icons.bedtime_outlined, color: Colors.orangeAccent),
+                  const SizedBox(width: 12),
+                  const Expanded(child: Text("취침 예약", style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600))),
+                  if (state.timerHours > 0) Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: Colors.blue[50], borderRadius: BorderRadius.circular(12)), child: Text("${state.timerHours}시간 후 꺼짐", style: const TextStyle(fontSize: 13, color: Colors.blue, fontWeight: FontWeight.bold))),
+                ]),
+                const SizedBox(height: 16),
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  _SleepTimerBtn(label: "해제", selected: state.timerHours == 0, onTap: () => onSetTimer(0)),
+                  _SleepTimerBtn(label: "1시간", selected: state.timerHours == 1, onTap: () => onSetTimer(1)),
+                  _SleepTimerBtn(label: "2시간", selected: state.timerHours == 2, onTap: () => onSetTimer(2)),
+                  _SleepTimerBtn(label: "4시간", selected: state.timerHours == 4, onTap: () => onSetTimer(4)),
+                ])
+              ]),
+            ),
+            const SizedBox(height: 10),
+          ] else ...[
+            const SizedBox(height: 30),
+            Center(child: Image.asset('assets/images/ac_off.png', height: 100, errorBuilder: (c, e, s) => const Icon(Icons.ac_unit, size: 80, color: Colors.black12))),
+            const SizedBox(height: 40),
+          ]
         ],
       ),
     );
   }
-}
 
-/* ===== 타이머 2x2 그리드 (해제 / 1시간 / 2시간 / 4시간) ===== */
-
-class _TimerGrid2x2 extends StatelessWidget {
-  final int value; // 0/1/2/4
-  final void Function(int v)? onSelected;
-  final Color color;
-  const _TimerGrid2x2({
-    required this.value,
-    required this.onSelected,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    const items = [0, 1, 2, 4];
-    return LayoutBuilder(builder: (context, c) {
-      final double w = c.maxWidth;
-      final double h = w < 300 ? 44 : 50;
-      final padV = w < 300 ? 10.0 : 12.0;
-
-      return SizedBox(
-        height: h * 2 + 8,
-        child: GridView.count(
-          physics: const NeverScrollableScrollPhysics(),
-          crossAxisCount: 2,
-          mainAxisSpacing: 8,
-          crossAxisSpacing: 8,
-          childAspectRatio: (w / 2 - 8) / h,
-          children: items.map((hVal) {
-            final sel = hVal == value;
-            return ElevatedButton(
-              onPressed: onSelected == null ? null : () => onSelected!(hVal),
-              style: ElevatedButton.styleFrom(
-                elevation: 0,
-                padding: EdgeInsets.symmetric(vertical: padV),
-                backgroundColor: sel ? color : Colors.grey.shade200,
-                foregroundColor: sel ? Colors.white : Colors.grey.shade800,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                textStyle: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(hVal == 0 ? '해제' : '${hVal}시간'),
-              ),
-            );
-          }).toList(),
-        ),
-      );
-    });
+  IconData _getModeIcon(AcMode m) {
+    switch (m) { case AcMode.cool: return Icons.ac_unit; case AcMode.heat: return Icons.wb_sunny; case AcMode.dry: return Icons.water_drop; case AcMode.fan: return Icons.air; case AcMode.auto: return Icons.hdr_auto; }
+  }
+  String _fanSpeedToString(AcFanSpeed s) {
+    switch (s) { case AcFanSpeed.auto: return '자동'; case AcFanSpeed.low: return '약풍'; case AcFanSpeed.medium: return '중풍'; case AcFanSpeed.high: return '강풍'; }
+  }
+  void _showModePicker(BuildContext context) {
+    showModalBottomSheet(context: context, backgroundColor: Colors.white, shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))), builder: (_) => Container(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [const Text("운전 모드 선택", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 20), Wrap(spacing: 12, runSpacing: 12, children: AcMode.values.map((m) => _OptionChip(label: m.label, selected: state.mode == m, onSelected: () { onSetMode(m); Navigator.pop(context); })).toList())])));
+  }
+  void _showFanSpeedPicker(BuildContext context) {
+    showModalBottomSheet(context: context, backgroundColor: Colors.white, shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))), builder: (_) => Container(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [const Text("바람 세기 선택", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 20), Wrap(spacing: 12, runSpacing: 12, children: AcFanSpeed.values.map((s) => _OptionChip(label: _fanSpeedToString(s), selected: state.fanSpeed == s, onSelected: () { onSetFanSpeed(s); Navigator.pop(context); })).toList())])));
   }
 }
 
-/* ======================= 환기(무덕트: 에어패스) ======================= */
-
+// ================================ [2] 환기 카드 (리뉴얼) ================================
 class _AirpassCard extends StatelessWidget {
   final bool isOn;
   final VoidCallback onToggle;
   final bool loading;
-
-  const _AirpassCard({
-    required this.isOn,
-    required this.onToggle,
-    required this.loading,
-  });
+  const _AirpassCard({required this.isOn, required this.onToggle, required this.loading});
 
   @override
   Widget build(BuildContext context) {
-    final color = Colors.teal;
+    // 켜지면 민트색(Teal) 계열 배경
+    final bgColor = isOn ? const Color(0xFFE0F2F1) : Colors.white;
+    final fgColor = isOn ? Colors.teal : Colors.grey;
 
-    return _Card(
-      color: color,
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15, offset: const Offset(0, 5))],
+      ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _HeaderRow(
-            icon: Icons.air_outlined,
-            color: color,
-            title: '환기(무덕트)',
-            trailing: _PrimaryButton(
-              label: isOn ? '켜짐' : '꺼짐',
-              onPressed: loading ? null : onToggle,
-              active: isOn,
-              color: color,
-            ),
-          ),
-
-          AnimatedSize(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOut,
-            child: isOn
-                ? Column(
-              children: [
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: loading ? null : onToggle,
-                    style: ElevatedButton.styleFrom(
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(vertical: 18),
-                      backgroundColor: color,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      textStyle: const TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 18,
-                      ),
-                    ),
-                    child: const Text('가동 중'),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.air_rounded, color: fgColor, size: 28),
+                  const SizedBox(width: 12),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('환기', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
+                      const SizedBox(height: 2),
+                      Text(isOn ? "가동 중" : "꺼짐", style: TextStyle(fontSize: 13, color: isOn ? Colors.teal : Colors.grey)),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '신선한 공기 순환 중',
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodyMedium
-                      ?.copyWith(color: Colors.grey[700]),
-                ),
-              ],
-            )
-                : const SizedBox.shrink(),
+                ],
+              ),
+              _PowerButton(on: isOn, onPressed: loading ? null : onToggle),
+            ],
           ),
+          if (isOn) ...[
+            const SizedBox(height: 20),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              decoration: BoxDecoration(color: Colors.white.withOpacity(0.6), borderRadius: BorderRadius.circular(16)),
+              child: const Text(
+                "신선한 공기 순환 중 🍃",
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.teal),
+              ),
+            ),
+          ]
         ],
       ),
     );
   }
 }
 
-
-/* ============================ 전동 블라인드 ============================ */
-
+// ================================ [3] 블라인드 카드 (리뉴얼) ================================
 class _BlindsCard extends StatelessWidget {
   final BlindsStatus status;
   final VoidCallback onOpen;
   final VoidCallback onStop;
   final VoidCallback onClose;
   final bool loading;
-
-  const _BlindsCard({
-    required this.status,
-    required this.onOpen,
-    required this.onStop,
-    required this.onClose,
-    required this.loading,
-  });
-
-  String _label(BlindsStatus s) {
-    switch (s) {
-      case BlindsStatus.open:
-        return '열림';
-      case BlindsStatus.close:
-        return '닫힘';
-      case BlindsStatus.stop:
-      default:
-        return '정지';
-    }
-  }
+  const _BlindsCard({required this.status, required this.onOpen, required this.onStop, required this.onClose, required this.loading});
 
   @override
   Widget build(BuildContext context) {
-    final color = Colors.amber;
-
-    return _Card(
-      color: color,
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15, offset: const Offset(0, 5))],
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _HeaderRow(
-            icon: Icons.wb_sunny_outlined,
-            color: color,
-            title: '전동 블라인드',
-          ),
-          const SizedBox(height: 6),
-          Text(
-            '현재 상태: ${_label(status)}',
-            style: Theme.of(context)
-                .textTheme
-                .bodyMedium
-                ?.copyWith(color: Colors.grey[700], fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 10),
           Row(
             children: [
-              Expanded(
-                child: _BigAction(
-                  icon: Icons.keyboard_arrow_up_rounded,
-                  label: '열기',
-                  color: Colors.green,
-                  onPressed: loading ? null : onOpen,
-                  selected: status == BlindsStatus.open,
-                ),
+              const Icon(Icons.curtains_rounded, color: Colors.orangeAccent, size: 28),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('전동 블라인드', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
+                  const SizedBox(height: 2),
+                  Text('현재 상태: ${status.label}', style: const TextStyle(fontSize: 13, color: Colors.grey)),
+                ],
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _BigAction(
-                  icon: Icons.stop_rounded,
-                  label: '정지',
-                  color: Colors.grey,
-                  onPressed: loading ? null : onStop,
-                  selected: status == BlindsStatus.stop,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _BigAction(
-                  icon: Icons.keyboard_arrow_down_rounded,
-                  label: '닫기',
-                  color: Colors.red,
-                  onPressed: loading ? null : onClose,
-                  selected: status == BlindsStatus.close,
-                ),
-              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(child: _BlindCtrlBtn(icon: Icons.keyboard_arrow_up_rounded, label: "열기", isActive: status == BlindsStatus.open, onTap: loading ? null : onOpen)),
+              const SizedBox(width: 12),
+              Expanded(child: _BlindCtrlBtn(icon: Icons.stop_rounded, label: "정지", isActive: status == BlindsStatus.stop, onTap: loading ? null : onStop)),
+              const SizedBox(width: 12),
+              Expanded(child: _BlindCtrlBtn(icon: Icons.keyboard_arrow_down_rounded, label: "닫기", isActive: status == BlindsStatus.close, onTap: loading ? null : onClose)),
             ],
           )
         ],
@@ -432,22 +323,45 @@ class _BlindsCard extends StatelessWidget {
   }
 }
 
-/* ================================ 조명 ================================ */
+class _BlindCtrlBtn extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool isActive;
+  final VoidCallback? onTap;
+  const _BlindCtrlBtn({required this.icon, required this.label, required this.isActive, required this.onTap});
 
+  @override
+  Widget build(BuildContext context) {
+    final color = isActive ? Colors.orangeAccent : Colors.grey[400];
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        decoration: BoxDecoration(
+          color: isActive ? Colors.orange[50] : Colors.grey[50],
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: isActive ? Colors.orangeAccent.withOpacity(0.5) : Colors.transparent),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, size: 30, color: color),
+            const SizedBox(height: 4),
+            Text(label, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: isActive ? Colors.orange[800] : Colors.grey[600])),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ================================ [4] 조명 카드 (리뉴얼) ================================
 class _LightsColumn extends StatelessWidget {
   final List<String> rooms;
   final IotSnapshot snapshot;
-  final void Function(String room) onToggle;
-  final void Function(String room, BrightnessLevel b) onBrightness;
+  final void Function(String) onToggle;
+  final void Function(String, BrightnessLevel) onBrightness;
   final bool loading;
-
-  const _LightsColumn({
-    required this.rooms,
-    required this.snapshot,
-    required this.onToggle,
-    required this.onBrightness,
-    required this.loading,
-  });
+  const _LightsColumn({required this.rooms, required this.snapshot, required this.onToggle, required this.onBrightness, required this.loading});
 
   @override
   Widget build(BuildContext context) {
@@ -456,9 +370,7 @@ class _LightsColumn extends StatelessWidget {
         for (final room in rooms) ...[
           _LightCard(
             room: room,
-            state: snapshot.lights[room] ??
-                const LightRoomState(
-                    isOn: false, brightness: BrightnessLevel.normal),
+            state: snapshot.lights[room] ?? const LightRoomState(isOn: false, brightness: BrightnessLevel.normal),
             onToggle: () => onToggle(room),
             onBrightness: (b) => onBrightness(room, b),
             loading: loading,
@@ -474,292 +386,135 @@ class _LightCard extends StatelessWidget {
   final String room;
   final LightRoomState state;
   final VoidCallback onToggle;
-  final void Function(BrightnessLevel b) onBrightness;
+  final void Function(BrightnessLevel) onBrightness;
   final bool loading;
-
-  const _LightCard({
-    required this.room,
-    required this.state,
-    required this.onToggle,
-    required this.onBrightness,
-    required this.loading,
-  });
+  const _LightCard({required this.room, required this.state, required this.onToggle, required this.onBrightness, required this.loading});
 
   @override
   Widget build(BuildContext context) {
     final on = state.isOn;
-    final b = state.brightness;
+    final bgColor = on ? const Color(0xFFFFF3E0) : Colors.white; // Soft Orange when ON
 
-    return _Card(
-      color: Colors.orange,
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+      ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _HeaderRow(
-            icon: Icons.lightbulb_outline,
-            color: Colors.orange,
-            title: room,
-            trailing: _PrimaryButton(
-              label: on ? '켜짐' : '꺼짐',
-              onPressed: loading ? null : onToggle,
-              active: on,
-              color: Colors.orange,
-            ),
-          ),
-          AnimatedSize(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOut,
-            child: on
-                ? Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: _ModeChips<BrightnessLevel>(
-                label: '밝기',
-                value: b,
-                items: const {
-                  BrightnessLevel.dim: '어둡게',
-                  BrightnessLevel.normal: '보통',
-                  BrightnessLevel.bright: '밝게',
-                },
-                onSelected: loading ? null : onBrightness,
-                center: true,
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(on ? Icons.lightbulb : Icons.lightbulb_outline, color: on ? Colors.orange : Colors.grey, size: 28),
+                  const SizedBox(width: 12),
+                  Text(room, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
+                ],
               ),
-            )
-                : const SizedBox(height: 0),
+              _PowerButton(on: on, onPressed: loading ? null : onToggle),
+            ],
           ),
+          if (on) ...[
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 8,
+              children: [
+                _OptionChip(label: "어둡게", selected: state.brightness == BrightnessLevel.dim, onSelected: () => onBrightness(BrightnessLevel.dim)),
+                _OptionChip(label: "보통", selected: state.brightness == BrightnessLevel.normal, onSelected: () => onBrightness(BrightnessLevel.normal)),
+                _OptionChip(label: "밝게", selected: state.brightness == BrightnessLevel.bright, onSelected: () => onBrightness(BrightnessLevel.bright)),
+              ],
+            )
+          ]
         ],
       ),
     );
   }
 }
 
-/* ============================== 공용 위젯 ============================== */
+// ---------------------- 공통 위젯들 ----------------------
 
-class _Card extends StatelessWidget {
-  final Color color;
-  final Widget child;
-  const _Card({required this.color, required this.child});
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(14),
-    decoration: BoxDecoration(
-      color: color.withOpacity(.06),
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: color.withOpacity(.30)),
-    ),
-    child: child,
-  );
-}
-
-class _HeaderRow extends StatelessWidget {
-  final IconData icon;
-  final Color color;
-  final String title;
-  final Widget? trailing;
-  const _HeaderRow(
-      {required this.icon, required this.color, required this.title, this.trailing});
-
-  @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      CircleAvatar(
-        radius: 18,
-        backgroundColor: color.withOpacity(.18),
-        child: Icon(icon, color: color),
-      ),
-      const SizedBox(width: 10),
-      Expanded(
-        child: Text(
-          title,
-          style: Theme.of(context)
-              .textTheme
-              .titleMedium
-              ?.copyWith(fontWeight: FontWeight.w700, fontSize: 18),
-        ),
-      ),
-      if (trailing != null) trailing!,
-    ],
-  );
-}
-
-class _PrimaryButton extends StatelessWidget {
-  final String label;
+class _PowerButton extends StatelessWidget {
+  final bool on;
   final VoidCallback? onPressed;
-  final bool active;
-  final Color color;
-  const _PrimaryButton(
-      {required this.label,
-        required this.onPressed,
-        required this.active,
-        required this.color});
-
-  @override
-  Widget build(BuildContext context) => ElevatedButton(
-    onPressed: onPressed,
-    style: ElevatedButton.styleFrom(
-      elevation: 0,
-      backgroundColor: active ? color : Colors.grey.shade200,
-      foregroundColor: active ? Colors.white : Colors.grey.shade700,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      shape:
-      RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      textStyle: const TextStyle(fontWeight: FontWeight.w700),
-    ),
-    child: Text(label),
-  );
-}
-
-class _TempControlRow extends StatelessWidget {
-  final int temp;
-  final VoidCallback? onMinus;
-  final VoidCallback? onPlus;
-  final Color color;
-  const _TempControlRow(
-      {required this.temp, required this.onMinus, required this.onPlus, required this.color});
-
-  @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      _RoundIconBtn(icon: Icons.remove, onTap: onMinus, color: color),
-      const SizedBox(width: 10),
-      Expanded(
-        child: FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Text(
-            '$temp°C',
-            style: Theme.of(context)
-                .textTheme
-                .displaySmall
-                ?.copyWith(fontWeight: FontWeight.w800, color: color),
-          ),
-        ),
-      ),
-      const SizedBox(width: 10),
-      _RoundIconBtn(icon: Icons.add, onTap: onPlus, color: color),
-    ],
-  );
-}
-
-class _RoundIconBtn extends StatelessWidget {
-  final IconData icon;
-  final VoidCallback? onTap;
-  final Color color;
-  const _RoundIconBtn({required this.icon, required this.onTap, required this.color});
-  @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: onTap,
-    customBorder: const CircleBorder(),
-    child: Ink(
-      width: 44,
-      height: 44,
-      decoration: BoxDecoration(
-        color: color.withOpacity(.12),
-        shape: BoxShape.circle,
-      ),
-      child: Icon(icon, color: color),
-    ),
-  );
-}
-
-class _ModeChips<T> extends StatelessWidget {
-  final String label;
-  final T value;
-  final Map<T, String> items;
-  final void Function(T v)? onSelected;
-  final bool center;
-
-  const _ModeChips({
-    required this.label,
-    required this.value,
-    required this.items,
-    required this.onSelected,
-    this.center = false,
-  });
+  const _PowerButton({required this.on, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
-    final wrapAlign = center ? WrapAlignment.center : WrapAlignment.start;
-
-    final column = Column(
-      crossAxisAlignment:
-      center ? CrossAxisAlignment.center : CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          textAlign: center ? TextAlign.center : TextAlign.start,
-          style: Theme.of(context)
-              .textTheme
-              .bodyMedium
-              ?.copyWith(color: Colors.grey[700]),
-        ),
-        const SizedBox(height: 6),
-        Wrap(
-          alignment: wrapAlign,
-          runAlignment: wrapAlign,
-          spacing: 8,
-          runSpacing: 8,
-          children: items.keys.map((k) {
-            final sel = k == value;
-            return ChoiceChip(
-              label: Text(items[k]!),
-              selected: sel,
-              onSelected: onSelected == null ? null : (_) => onSelected!(k),
-              selectedColor: Theme.of(context).colorScheme.primary,
-              labelStyle: TextStyle(
-                color: sel ? Colors.white : Colors.black87,
-                fontWeight: FontWeight.w700,
-              ),
-              side: const BorderSide(color: Colors.black12),
-            );
-          }).toList(),
-        ),
-      ],
+    return Container(
+      decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.white, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 4, offset: const Offset(0, 2))]),
+      child: IconButton(
+        icon: const Icon(Icons.power_settings_new),
+        iconSize: 28,
+        color: on ? Colors.blue : Colors.grey,
+        onPressed: onPressed,
+      ),
     );
-
-    return center ? SizedBox(width: double.infinity, child: column) : column;
   }
 }
 
-class _BigAction extends StatelessWidget {
+class _ControlBox extends StatelessWidget {
+  final String title;
   final IconData icon;
-  final String label;
+  final String value;
   final Color color;
-  final VoidCallback? onPressed;
-  final bool selected;
-
-  const _BigAction(
-      {required this.icon,
-        required this.label,
-        required this.color,
-        required this.onPressed,
-        this.selected = false});
+  final VoidCallback onTap;
+  const _ControlBox({required this.title, required this.icon, required this.value, required this.color, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final Color bgBase = selected ? color : color.withOpacity(.12);
-    final Color fgBase = selected ? Colors.white : color;
-
-    return ElevatedButton.icon(
-      onPressed: onPressed,
-      icon: Icon(icon),
-      label: Text(label),
-      style: ElevatedButton.styleFrom(
-        elevation: 0,
-        padding: const EdgeInsets.symmetric(vertical: 14),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        backgroundColor: bgBase,
-        foregroundColor: fgBase,
-        textStyle: const TextStyle(fontWeight: FontWeight.w800),
-      ).merge(
-        ButtonStyle(
-          backgroundColor: MaterialStateProperty.resolveWith((states) {
-            if (states.contains(MaterialState.pressed)) {
-              return selected ? color.withOpacity(.90) : color.withOpacity(.20);
-            }
-            return bgBase;
-          }),
-          foregroundColor: MaterialStatePropertyAll(fgBase),
-        ),
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 100,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Icon(icon, color: Colors.grey[700], size: 24), Icon(Icons.arrow_forward_ios, size: 12, color: Colors.grey[300])]),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: TextStyle(fontSize: 12, color: Colors.grey[500])), const SizedBox(height: 2), Text(value, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87))])
+        ]),
       ),
+    );
+  }
+}
+
+class _SleepTimerBtn extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _SleepTimerBtn({required this.label, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(color: selected ? Colors.black87 : Colors.grey[100], borderRadius: BorderRadius.circular(20)),
+        child: Text(label, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: selected ? Colors.white : Colors.grey[600])),
+      ),
+    );
+  }
+}
+
+class _OptionChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onSelected;
+  const _OptionChip({required this.label, required this.selected, required this.onSelected});
+
+  @override
+  Widget build(BuildContext context) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) => onSelected(),
+      selectedColor: Colors.black87,
+      labelStyle: TextStyle(color: selected ? Colors.white : Colors.black87, fontWeight: FontWeight.bold),
+      backgroundColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20), side: BorderSide(color: selected ? Colors.transparent : Colors.grey.shade300)),
     );
   }
 }
