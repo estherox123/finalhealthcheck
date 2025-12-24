@@ -1,51 +1,75 @@
-// lib/data/iot/models.dart
 import 'package:flutter/foundation.dart';
 
 /// 에어컨 모드
-enum AcMode { cool, heat, fan }
+enum AcMode { cool, heat, fan, dry, auto }
 
 extension AcModeLabel on AcMode {
   String get label => switch (this) {
     AcMode.cool => '냉방',
     AcMode.heat => '난방',
     AcMode.fan  => '송풍',
+    AcMode.dry  => '제습',
+    AcMode.auto => '자동',
   };
 }
 
+enum AcFanSpeed { auto, low, medium, high }
+
 /// 에어컨 상태
-@immutable
 class AirconState {
   final bool isOn;
-  final int temperature; // 16~30
+  final int temperature;        // 희망 온도
+  final double currentTemperature;
+  final double currentHumidity;
   final AcMode mode;
-  final int timerHours; // 0/1/2/4
+  final int timerHours;
+  final AcFanSpeed fanSpeed;
+  final bool isSwing;           // (UI에서는 숨기지만, API 호환성을 위해 유지)
 
   const AirconState({
     required this.isOn,
     required this.temperature,
+    this.currentTemperature = 0.0,
+    this.currentHumidity = 0.0,
     required this.mode,
     required this.timerHours,
+    this.fanSpeed = AcFanSpeed.auto,
+    this.isSwing = false,
   });
+
+  // 초기 상태
+  static const initial = AirconState(
+    isOn: false,
+    temperature: 24,
+    currentTemperature: 24.0,
+    currentHumidity: 50.0,
+    mode: AcMode.cool,
+    timerHours: 0,
+    fanSpeed: AcFanSpeed.auto,
+    isSwing: false,
+  );
 
   AirconState copyWith({
     bool? isOn,
     int? temperature,
+    double? currentTemperature,
+    double? currentHumidity,
     AcMode? mode,
     int? timerHours,
-  }) =>
-      AirconState(
-        isOn: isOn ?? this.isOn,
-        temperature: temperature ?? this.temperature,
-        mode: mode ?? this.mode,
-        timerHours: timerHours ?? this.timerHours,
-      );
-
-  static const initial = AirconState(
-    isOn: false,
-    temperature: 24,
-    mode: AcMode.cool,
-    timerHours: 0,
-  );
+    AcFanSpeed? fanSpeed,
+    bool? isSwing,
+  }) {
+    return AirconState(
+      isOn: isOn ?? this.isOn,
+      temperature: temperature ?? this.temperature,
+      currentTemperature: currentTemperature ?? this.currentTemperature,
+      currentHumidity: currentHumidity ?? this.currentHumidity,
+      mode: mode ?? this.mode,
+      timerHours: timerHours ?? this.timerHours,
+      fanSpeed: fanSpeed ?? this.fanSpeed,
+      isSwing: isSwing ?? this.isSwing,
+    );
+  }
 }
 
 /// HRV(환기) 상태

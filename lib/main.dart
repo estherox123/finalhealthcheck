@@ -1,15 +1,15 @@
 // lib/main.dart
 import 'package:flutter/material.dart';
+import 'package:intl/date_symbol_data_local.dart';
 import 'app_shell.dart';
 import 'services/reminder_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  await initializeDateFormatting();
   await ReminderService.instance.init();
-  
-  // Check for due reminders when app starts
   ReminderService.instance.checkScheduledReminders();
-  
   runApp(const MyApp());
 }
 

@@ -7,6 +7,7 @@ import 'models.dart';
 class MockIotApi implements IotApi {
   IotSnapshot _state = IotSnapshot.initial();
 
+  // 네트워크 지연 시뮬레이션 헬퍼
   Future<T> _latency<T>(T Function() body) async {
     await Future.delayed(const Duration(milliseconds: 200));
     return body();
@@ -15,6 +16,7 @@ class MockIotApi implements IotApi {
   @override
   Future<IotSnapshot> fetchSnapshot() => _latency(() => _state);
 
+  /* ----------------------------- Aircon ----------------------------- */
   @override
   Future<AirconState> setAirconPower(bool on) => _latency(() {
     _state = _state.copyWith(aircon: _state.aircon.copyWith(isOn: on));
@@ -42,17 +44,36 @@ class MockIotApi implements IotApi {
   });
 
   @override
+  Future<AirconState> setAirconFanSpeed(AcFanSpeed speed) => _latency(() {
+    _state = _state.copyWith(
+      aircon: _state.aircon.copyWith(fanSpeed: speed),
+    );
+    return _state.aircon;
+  });
+
+  @override
+  Future<AirconState> setAirconSwing(bool isSwing) => _latency(() {
+    _state = _state.copyWith(
+      aircon: _state.aircon.copyWith(isSwing: isSwing),
+    );
+    return _state.aircon;
+  });
+
+  /* ----------------------------- HRV ----------------------------- */
+  @override
   Future<HrvState> setHrvPower(bool on) => _latency(() {
     _state = _state.copyWith(hrv: _state.hrv.copyWith(isOn: on));
     return _state.hrv;
   });
 
+  /* ----------------------------- Blinds ----------------------------- */
   @override
   Future<BlindsStatus> controlBlinds(BlindsStatus status) => _latency(() {
     _state = _state.copyWith(blinds: status);
     return _state.blinds;
   });
 
+  /* ----------------------------- Lights ----------------------------- */
   @override
   Future<LightsState> toggleLight(String room) => _latency(() {
     final cur = _state.lights[room] ?? LightRoomState.off;
@@ -70,4 +91,5 @@ class MockIotApi implements IotApi {
     _state = _state.copyWith(lights: newMap);
     return _state.lights;
   });
+
 }

@@ -1,25 +1,25 @@
 // lib/pages/home_page.dart
-/// 홈페이지 (대시보드). 핵심 의료 데이터 + 실내 환경 + 빠른 모드 변환 + 최근 알림
-/// - 수면 점수 (지난 밤 수면 + 패턴 기반 점수)
-/// - 심박수 (지난 밤 평균 심박수)
-/// - 심박변이도
-/// - 활동 시간(더미: 지금은 대시보드용 간단 지표)
-/// - 실내 환경(더미)
-/// - 빠른 모드 (수면/휴식/일상)
-/// - 최근 알림
-
 import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+
+// 페이지 이동
 import 'package:finalhealthcheck/pages/sleep_detail_page.dart';
 import 'package:finalhealthcheck/pages/heart_rate_detail_page.dart';
 import 'package:finalhealthcheck/pages/steps_page.dart';
 
+// 데이터 및 로직
 import '../controllers/dashboard_controller.dart';
 import '../data/health_repository.dart';
 import '../widgets/permission_banner.dart';
 import '../data/health_data_service.dart';
 import '../widgets/top_settings_menu.dart';
+
+// IoT
+import '../data/iot/device_control_controller.dart';
+import '../data/iot/iot_repository.dart';
+import '../data/iot/home_assistant_api.dart';
+import '../data/iot/home_assistant_options.dart';
 
 // ===== QuickMode & ModeService =====
 enum QuickMode { sleep, rest, daily }
@@ -28,17 +28,14 @@ abstract class ModeService {
   Future<void> apply(QuickMode mode);
 }
 
-// 더미 구현: 실제 IoT/HA 붙기 전까지 사용
 class DummyModeService implements ModeService {
   @override
   Future<void> apply(QuickMode mode) async {
-    // 실제 호출 시 네트워크/HA 명령을 날리면 됨
-    await Future.delayed(const Duration(milliseconds: 80));
-    // throw Exception('fail'); // 실패 테스트용
+    await Future.delayed(const Duration(milliseconds: 150));
   }
 }
 
-// ------------------------------ 홈 대시보드 ------------------------------
+// ------------------------------ 홈 대시보드 (시니어 친화적 디자인) ------------------------------
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -47,905 +44,573 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // 더미 초기값(실데이터 로드 전까지 표시)
+  // 헬스 더미 데이터
   int _sleepScoreDummy = 82;
   int _sleepDeltaDummy = 1;
-
   int _heartRateDummy = 68;
   int _hrDeltaDummy = 0;
-
   int _hrvDummy = 52;
   int _hrvDeltaDummy = -1;
-
-  double _respDummy = 14.5;
-  int _respDeltaDummy = 0;
-
-  // 활동 시간 더미(아직 컨트롤러에는 없음)
   int _activityMinutesDummy = 45;
   int _activityDeltaDummy = 0;
 
-  // 환경 더미(추후 IoT 연동 예정)
-  double temp = 24.6; // °C
-  double humidity = 45.0; // %
-  int co2 = 820; // ppm
-  double pm25 = 22.0; // µg/m³
+  // 환경 더미 (센서 없는 값)
+  int co2 = 820;
+  double pm25 = 22.0;
 
   static const List<_NotificationItem> _lastNoti = [
-    _NotificationItem(icon: Icons.air, text: '환기 권장: CO₂가 곧 1000ppm에 도달'),
-    _NotificationItem(icon: Icons.nightlight_round, text: '수면 모드 예약: 22:30에 자동 전환'),
-    _NotificationItem(icon: Icons.health_and_safety, text: '걸음수 목표 80% 달성!'),
+    _NotificationItem(icon: Icons.air, text: '환기 필요: 공기가 탁해요', time: '10분 전', isAlert: true),
+    _NotificationItem(icon: Icons.nightlight_round, text: '취침 예약 실행됨', time: '1시간 전', isAlert: false),
+    _NotificationItem(icon: Icons.directions_walk, text: '걸음 목표 달성!', time: '2시간 전', isAlert: false),
   ];
 
   late final DashboardController _dc;
+  late final DeviceControlController _iotDc;
+
   final ModeService _modeSvc = DummyModeService();
 
-  // 빠른 모드 상태 + 스로틀
   QuickMode _mode = QuickMode.daily;
   bool _modeBusy = false;
 
   @override
   void initState() {
     super.initState();
+    // 1. Health Controller
     _dc = DashboardController(HealthRepositoryImpl());
-    _dc.addListener(_onDc);
+    _dc.addListener(_onRefreshUI);
     _dc.init();
+
+    // 2. IoT Controller
+    try {
+      final iotApi = HomeAssistantApi(options: HomeAssistantOptions.fromEnv());
+      _iotDc = DeviceControlController(IotRepository(iotApi));
+      _iotDc.addListener(_onRefreshUI);
+      _iotDc.init();
+    } catch (e) {
+      debugPrint('IoT Init Error: $e');
+    }
   }
 
-  void _onDc() => setState(() {});
+  void _onRefreshUI() {
+    if (mounted) setState(() {});
+  }
 
   @override
   void dispose() {
-    _dc.removeListener(_onDc);
+    _dc.removeListener(_onRefreshUI);
+    _iotDc.removeListener(_onRefreshUI);
     super.dispose();
   }
 
-  // ===== 빠른 모드 전환(낙관적 UI + 실패 시 롤백) =====
-  Future<void> _setMode(QuickMode m, String toast) async {
+  Future<void> _setMode(QuickMode m) async {
     if (_modeBusy || _mode == m) return;
     final prev = _mode;
     setState(() {
       _mode = m;
       _modeBusy = true;
     });
-    showOneShotSnackBar(context, toast);
 
     try {
       await _modeSvc.apply(m);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${_modeName(m)} 모드로 변경했습니다.', style: const TextStyle(fontSize: 16)),
+          duration: const Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     } catch (_) {
       if (!mounted) return;
-      setState(() => _mode = prev); // 롤백
-      showOneShotSnackBar(context, '전환 실패: 나중에 다시 시도해주세요');
+      setState(() => _mode = prev);
     } finally {
-      await Future.delayed(const Duration(milliseconds: 250)); // 초미니 쿨다운
       if (mounted) setState(() => _modeBusy = false);
     }
   }
 
+  String _modeName(QuickMode m) {
+    switch (m) {
+      case QuickMode.sleep: return '수면';
+      case QuickMode.rest: return '휴식';
+      case QuickMode.daily: return '일상';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final media = MediaQuery.of(context);
     final now = DateTime.now();
-    final dateStr =
-        '${now.year}.${_two(now.month)}.${_two(now.day)} (${_weekdayKR(now.weekday)})';
+    final dateStr = DateFormat('M월 d일 EEEE', 'ko').format(now);
     final greet = _greeting(now);
 
-    // Compact 모드: 화면 폭이 좁거나 텍스트 배율이 큰 경우
-    final double w = media.size.width;
-    final double textScale = media.textScaler.scale(1.0);
-    final bool compact = (w < 400) || (textScale > 1.2);
-
-    // 레이아웃 파라미터
-    final double hPad = compact ? 12.0 : 16.0;
-    final double gap = compact ? 8.0 : 12.0;
-    final double typeScale = compact ? 0.92 : 1.0;
-
-    // 컨디션 카드: Wrap 2열
-    final double gridSpacing = gap;
-    final double cardWidth = (w - hPad * 2 - gridSpacing) / 2;
-
-    // 컨트롤러 스냅샷 → 값 (없으면 더미 사용)
+    // 데이터 준비
     final snap = _dc.snapshot;
     final loading = _dc.status == DashboardStatus.loading;
 
-    final int? sleepScore = snap?.sleepScore ?? _sleepScoreDummy;
-    final int sleepDelta = snap?.deltaVs7d['sleep'] ?? _sleepDeltaDummy;
+    final sleepScore = snap?.sleepScore ?? _sleepScoreDummy;
+    final sleepDelta = snap?.deltaVs7d['sleep'] ?? _sleepDeltaDummy;
+    final heartRate = snap?.heartRateAvg ?? _heartRateDummy;
+    final hrDelta = snap?.deltaVs7d['hr'] ?? _hrDeltaDummy;
+    final hrv = snap?.hrvRmssd ?? _hrvDummy;
+    final hrvDelta = snap?.deltaVs7d['hrv'] ?? _hrvDeltaDummy;
+    final activityMinutes = _activityMinutesDummy;
+    final activityDelta = _activityDeltaDummy;
 
-    // 심박수: 리포지토리에서 "지난 밤 평균 심박수" 기준으로 계산되도록 맞춰둠
-    final int? heartRate = snap?.heartRateAvg ?? _heartRateDummy;
-    final int hrDelta = snap?.deltaVs7d['hr'] ?? _hrDeltaDummy;
-
-    final int? hrv = snap?.hrvRmssd ?? _hrvDummy;
-    final int hrvDelta = snap?.deltaVs7d['hrv'] ?? _hrvDeltaDummy;
-
-    final double? respiration = snap?.respirationNight ?? _respDummy;
-    final int respDelta = snap?.deltaVs7d['resp'] ?? _respDeltaDummy;
-
-    // 활동 시간은 아직 컨트롤러에 없다고 가정하고 더미만 사용
-    final int activityMinutes = _activityMinutesDummy;
-    final int activityDelta = _activityDeltaDummy;
+    // IoT 데이터
+    final iotSnap = _iotDc.snapshot;
+    double temp = iotSnap.aircon.currentTemperature;
+    double humidity = iotSnap.aircon.currentHumidity;
+    if (temp == 0.0) temp = 24.6;
+    if (humidity == 0.0) humidity = 45.0;
 
     return Scaffold(
+      backgroundColor: const Color(0xFFF0F2F5), // 눈이 편한 연한 회색 배경
       appBar: AppBar(
-        title: const Text('오늘의 건강 대시보드'),
-        actions: const [TopSettingsMenu(), SizedBox(width: 4)],
+        backgroundColor: const Color(0xFFF0F2F5),
+        elevation: 0,
+        // 앱바에는 간단한 타이틀만 남김
+        title: const Text("건강 대시보드", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 20)),
+        centerTitle: false,
+        actions: const [TopSettingsMenu(), SizedBox(width: 8)],
         bottom: loading
-            ? const PreferredSize(
-          preferredSize: Size.fromHeight(2),
-          child: LinearProgressIndicator(minHeight: 2),
-        )
+            ? const PreferredSize(preferredSize: Size.fromHeight(4), child: LinearProgressIndicator(minHeight: 4))
             : null,
       ),
       body: RefreshIndicator(
         onRefresh: () async {
-          try {
-            await _dc.refresh();
-            await Future<void>.delayed(
-                const Duration(milliseconds: 150)); // 상태 반영 대기
-            if (!mounted) return;
-            if (_dc.status == DashboardStatus.error) {
-              showOneShotSnackBar(context, '갱신 실패: 네트워크를 확인해주세요');
-            }
-          } catch (_) {
-            if (!mounted) return;
-            showOneShotSnackBar(context, '갱신 실패: 네트워크를 확인해주세요');
-          }
+          await Future.wait([_dc.refresh(), _iotDc.init()]);
         },
-        child: SafeArea(
-          child: ListView(
-            padding: EdgeInsets.fromLTRB(hPad, 12, hPad, 24),
-            children: [
-              if (_dc.status == DashboardStatus.noPermission)
-                PermissionBanner(
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+          children: [
+            if (_dc.status == DashboardStatus.noPermission)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 20),
+                child: PermissionBanner(
                   types: kRecommendedTypes,
                   onGranted: () async => _dc.retryAfterPermission(),
                 ),
-
-              // 1) 인사 / 날짜
-              Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          greet,
-                          maxLines: 2,
-                          style: _scale(
-                            Theme.of(context)
-                                .textTheme
-                                .headlineSmall
-                                ?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              height: 1.1,
-                              letterSpacing: -0.1,
-                            ),
-                            typeScale,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          dateStr,
-                          maxLines: 1,
-                          style: _scale(
-                            Theme.of(context)
-                                .textTheme
-                                .bodyLarge
-                                ?.copyWith(color: Colors.grey[600]),
-                            typeScale,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  CircleAvatar(
-                    radius: compact ? 18 : 22,
-                    backgroundColor: Theme.of(context)
-                        .colorScheme
-                        .primary
-                        .withOpacity(0.15),
-                    child: Icon(
-                      Icons.face_6_outlined,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  ),
-                ],
               ),
-              const SizedBox(height: 12),
 
-              // 2) 오늘의 컨디션 (Wrap 2열)
-              Text(
-                '오늘의 컨디션',
-                style: _scale(
-                  Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w700),
-                  typeScale,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: gridSpacing,
-                runSpacing: gridSpacing,
-                children: [
-                  // 수면 점수
-                  SizedBox(
-                    width: cardWidth,
-                    child: _ConditionCard(
-                      title: '수면 점수',
-                      valueText: (sleepScore == null) ? '-' : '$sleepScore',
-                      unit: (sleepScore == null) ? '' : '/100',
-                      color: _statusColorFor('sleep', (sleepScore ?? 0)),
-                      delta: sleepDelta,
-                      caption:
-                      (sleepScore == null) ? '연동 필요' : '7일 평균 대비',
-                      icon: Icons.bedtime_outlined,
-                      typeScale: typeScale,
-                      compact: compact,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const SleepDetailPage(),
-                        ),
-                      ),
-                    ),
-                  ),
+            // 1. [수정] 인사말 & 날짜 (앱바에서 분리하여 크게 표시)
+            const SizedBox(height: 10),
+            Text(greet, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold, height: 1.3, color: Colors.black87)),
+            const SizedBox(height: 8),
+            Text(dateStr, style: TextStyle(fontSize: 16, color: Colors.grey[700], fontWeight: FontWeight.w500)),
+            const SizedBox(height: 30),
 
-                  // 심박수 (지난 밤 평균 심박수)
-                  SizedBox(
-                    width: cardWidth,
-                    child: _ConditionCard(
-                      title: '심박수',
-                      valueText:
-                      (heartRate == null) ? '-' : _fmtInt(heartRate!),
-                      unit: (heartRate == null) ? '' : ' bpm',
-                      color: _statusColorFor('hr', (heartRate ?? 0)),
-                      delta: hrDelta,
-                      caption:
-                      (heartRate == null) ? '연동 필요' : '7일 평균 대비',
-                      icon: Icons.favorite_outline,
-                      typeScale: typeScale,
-                      compact: compact,
-                      onTap: (_dc.status == DashboardStatus.loading)
-                          ? null
-                          : () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const HeartRateDetailPage(),
-                        ),
-                      ),
-                    ),
-                  ),
-
-                  // HRV
-                  SizedBox(
-                    width: cardWidth,
-                    child: _ConditionCard(
-                      title: '심박변이도',
-                      valueText: (hrv == null) ? '-' : _fmtInt(hrv!),
-                      unit: (hrv == null) ? '' : ' ms',
-                      color: _statusColorFor('hrv', (hrv ?? 0)),
-                      delta: hrvDelta,
-                      caption:
-                      (hrv == null) ? '연동 필요' : '7일 평균 대비',
-                      icon: Icons.multiline_chart,
-                      typeScale: typeScale,
-                      compact: compact,
-                      onTap: (_dc.status == DashboardStatus.loading)
-                          ? null
-                          : () {},
-                    ),
-                  ),
-
-                  // 활동 시간
-                  SizedBox(
-                    width: cardWidth,
-                    child: _ConditionCard(
-                      title: '활동 시간',
-                      valueText: '$activityMinutes',
-                      unit: ' 분',
-                      color: Colors.teal,
-                      delta: activityDelta,
-                      caption: '7일 평균 대비',
-                      icon: Icons.directions_walk,
-                      typeScale: typeScale,
-                      compact: compact,
-                      onTap: (_dc.status == DashboardStatus.loading)
-                          ? null
-                          : () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const StepsPage(),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-
-              // 3) 실내 환경 (더미 값)
-              Text(
-                '실내 환경',
-                style: _scale(
-                  Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w700),
-                  typeScale,
-                ),
-              ),
-              const SizedBox(height: 8),
-
-              if (!compact) ...[
-                Row(
-                  children: [
-                    Expanded(
-                      child: _EnvTile.horizontal(
-                        label: '온도',
-                        value: '${temp.toStringAsFixed(1)}°C',
-                        color: _colorForGrade(_gradeTemp(temp)),
-                        icon: Icons.thermostat_outlined,
-                        typeScale: typeScale,
-                      ),
-                    ),
-                    SizedBox(width: gap),
-                    Expanded(
-                      child: _EnvTile.horizontal(
-                        label: '습도',
-                        value: '${humidity.toStringAsFixed(0)}%',
-                        color: _colorForGrade(_gradeHum(humidity)),
-                        icon: Icons.water_drop_outlined,
-                        typeScale: typeScale,
-                      ),
-                    ),
-                  ],
-                ),
-                SizedBox(height: gap),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _EnvTile.horizontal(
-                        label: 'CO₂${_badgeFor(_gradeCO2(co2))}',
-                        value: '${_fmtInt(co2)}ppm',
-                        color: _colorForGrade(_gradeCO2(co2)),
-                        icon: Icons.co2_outlined,
-                        typeScale: typeScale,
-                      ),
-                    ),
-                    SizedBox(width: gap),
-                    Expanded(
-                      child: _EnvTile.horizontal(
-                        label: 'PM2.5${_badgeFor(_gradePM25(pm25))}',
-                        value: pm25.toStringAsFixed(1),
-                        color: _colorForGrade(_gradePM25(pm25)),
-                        icon: Icons.blur_on_outlined,
-                        typeScale: typeScale,
-                        trailing: (pm25 > 35.0)
-                            ? TextButton(
-                          onPressed: () {},
-                          child: const Text(
-                            '조치하기',
-                            style: TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                        )
-                            : null,
-                      ),
-                    ),
-                  ],
-                ),
-              ] else ...[
-                _EnvTile.vertical(
-                  label: '온도${_badgeFor(_gradeTemp(temp))}',
-                  value: '${temp.toStringAsFixed(1)}°C',
-                  color: _colorForGrade(_gradeTemp(temp)),
-                  icon: Icons.thermostat_outlined,
-                  typeScale: typeScale,
-                ),
-                SizedBox(height: gap),
-                _EnvTile.vertical(
-                  label: '습도${_badgeFor(_gradeHum(humidity))}',
-                  value: '${humidity.toStringAsFixed(0)}%',
-                  color: _colorForGrade(_gradeHum(humidity)),
-                  icon: Icons.water_drop_outlined,
-                  typeScale: typeScale,
-                ),
-                SizedBox(height: gap),
-                _EnvTile.vertical(
-                  label: 'CO₂${_badgeFor(_gradeCO2(co2))}',
-                  value: '${_fmtInt(co2)}ppm',
-                  color: _colorForGrade(_gradeCO2(co2)),
-                  icon: Icons.co2_outlined,
-                  typeScale: typeScale,
-                ),
-                SizedBox(height: gap),
-                _EnvTile.vertical(
-                  label: 'PM2.5${_badgeFor(_gradePM25(pm25))}',
-                  value: pm25.toStringAsFixed(1),
-                  color: _colorForGrade(_gradePM25(pm25)),
-                  icon: Icons.blur_on_outlined,
-                  typeScale: typeScale,
-                  bottom: (pm25 > 35.0)
-                      ? Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
-                      onPressed: () {},
-                      child: const Text(
-                        '조치하기',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  )
-                      : null,
-                ),
-              ],
-
-              const SizedBox(height: 16),
-
-              // 4) 빠른 모드 토글 (더미 액션)
-              Text(
-                '빠른 모드',
-                style: _scale(
-                  Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w700),
-                  typeScale,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: _ModeButton(
-                      label: '수면',
-                      icon: Icons.bedtime,
-                      onPressed: () => _setMode(
-                        QuickMode.sleep,
-                        '수면 모드로 전환합니다…',
-                      ),
-                      typeScale: typeScale,
-                      compact: compact,
-                    ),
-                  ),
-                  SizedBox(width: gap),
-                  Expanded(
-                    child: _ModeButton(
-                      label: '휴식',
-                      icon: Icons.spa_outlined,
-                      onPressed: () => _setMode(
-                        QuickMode.rest,
-                        '휴식 모드로 전환합니다…',
-                      ),
-                      typeScale: typeScale,
-                      compact: compact,
-                    ),
-                  ),
-                  SizedBox(width: gap),
-                  Expanded(
-                    child: _ModeButton(
-                      label: '일상',
-                      icon: Icons.flash_on_outlined,
-                      onPressed: () => _setMode(
-                        QuickMode.daily,
-                        '일상 모드로 전환합니다…',
-                      ),
-                      typeScale: typeScale,
-                      compact: compact,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-
-              // 5) 최근 알림 3개 (더미)
-              Text(
-                '최근 알림',
-                style: _scale(
-                  Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w700),
-                  typeScale,
-                ),
-              ),
-              const SizedBox(height: 8),
-              ..._lastNoti
-                  .take(3)
-                  .map((n) => _NotiTile(item: n, typeScale: typeScale)),
-              const SizedBox(height: 6),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () {},
-                  child: const Text('더 보기'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ------------------------------ 위젯들 --------------------------------------
-
-class _ConditionCard extends StatelessWidget {
-  final String title;
-  final String valueText;
-  final String unit;
-  final int delta; // +1 / 0 / -1
-  final Color color;
-  final String caption;
-  final IconData icon;
-  final VoidCallback? onTap;
-  final double typeScale;
-  final bool compact;
-
-  const _ConditionCard({
-    required this.title,
-    required this.valueText,
-    required this.unit,
-    required this.delta,
-    required this.color,
-    required this.caption,
-    required this.icon,
-    required this.onTap,
-    required this.typeScale,
-    required this.compact,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final bg = color.withOpacity(0.12);
-    final arrow = delta > 0
-        ? Icons.arrow_upward
-        : delta < 0
-        ? Icons.arrow_downward
-        : Icons.horizontal_rule;
-    final arrowColor =
-    delta > 0 ? Colors.green : (delta < 0 ? Colors.red : Colors.grey[600]);
-
-    final titleStyle = _scale(
-      Theme.of(context)
-          .textTheme
-          .titleMedium
-          ?.copyWith(fontWeight: FontWeight.w700),
-      typeScale,
-    );
-    final valueStyle = _withTabular(
-      _scale(
-        Theme.of(context)
-            .textTheme
-            .headlineMedium
-            ?.copyWith(fontWeight: FontWeight.w800),
-        typeScale,
-      ),
-    );
-    final unitStyle = _withTabular(
-      _scale(
-        Theme.of(context)
-            .textTheme
-            .titleMedium
-            ?.copyWith(color: Colors.grey[700]),
-        typeScale,
-      ),
-    );
-    final captionStyle = _scale(
-      Theme.of(context)
-          .textTheme
-          .bodySmall
-          ?.copyWith(color: Colors.grey[700]),
-      typeScale,
-    );
-
-    final needBadge = (caption == '연동 필요');
-
-    return Semantics(
-      label: title,
-      value: '$valueText$unit',
-      increasedValue: (delta > 0) ? '지난주 대비 상승' : null,
-      decreasedValue: (delta < 0) ? '지난주 대비 하락' : null,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: EdgeInsets.all(compact ? 12 : 14),
-          decoration: BoxDecoration(
-            color: bg,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: color.withOpacity(0.35), width: 1),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(icon, color: color, size: compact ? 20 : 24),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(title, maxLines: 2, style: titleStyle),
-                  ),
-                  if (needBadge)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(
-                          color: Colors.orange.withOpacity(0.3),
-                        ),
-                      ),
-                      child: const Text(
-                        '연동 필요',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.orange,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Expanded(
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Flexible(
-                          child: FittedBox(
-                            fit: BoxFit.scaleDown,
-                            alignment: Alignment.bottomLeft,
-                            child: Text(
-                              valueText,
-                              maxLines: 1,
-                              style: valueStyle,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        Flexible(
-                          child: Padding(
-                            padding: const EdgeInsets.only(bottom: 4),
-                            child: FittedBox(
-                              fit: BoxFit.scaleDown,
-                              alignment: Alignment.bottomLeft,
-                              child: Text(
-                                unit,
-                                maxLines: 1,
-                                style: unitStyle,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 2),
-                  SizedBox(
-                    width: 22,
-                    child: Icon(arrow, size: 18, color: arrowColor),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(caption, maxLines: 2, style: captionStyle),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _EnvTile extends StatelessWidget {
-  final String label;
-  final String value;
-  final Color color;
-  final IconData icon;
-  final double typeScale;
-  final Widget? trailing; // 가로형 전용
-  final Widget? bottom; // 세로형 전용
-
-  const _EnvTile.horizontal({
-    required this.label,
-    required this.value,
-    required this.color,
-    required this.icon,
-    required this.typeScale,
-    this.trailing,
-  }) : bottom = null;
-
-  const _EnvTile.vertical({
-    required this.label,
-    required this.value,
-    required this.color,
-    required this.icon,
-    required this.typeScale,
-    this.bottom,
-  }) : trailing = null;
-
-  @override
-  Widget build(BuildContext context) {
-    final isVertical = bottom != null;
-
-    if (isVertical) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.10),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: color.withOpacity(0.35)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+            // 2. 오늘의 컨디션
+            _SectionHeader(title: '오늘의 컨디션'),
+            GridView.count(
+              crossAxisCount: 2,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              mainAxisSpacing: 16,
+              crossAxisSpacing: 16,
+              childAspectRatio: 1.1, // 카드를 가로로 더 길게
               children: [
-                CircleAvatar(
-                  radius: 18,
-                  backgroundColor: color.withOpacity(0.18),
-                  child: Icon(icon, color: color, size: 20),
+                _HealthCard(
+                  title: '수면 점수',
+                  value: sleepScore.toString(),
+                  unit: '점',
+                  icon: Icons.bedtime,
+                  color: _statusColorFor('sleep', sleepScore),
+                  statusLabel: _getStatusLabel('sleep', sleepScore),
+                  delta: sleepDelta,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SleepDetailPage())),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    label,
-                    maxLines: 2,
-                    style: _scale(
-                      Theme.of(context)
-                          .textTheme
-                          .titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w700),
-                      1.0,
-                    ),
-                  ),
+                _HealthCard(
+                  title: '심박수',
+                  value: heartRate.toString(),
+                  unit: 'bpm',
+                  icon: Icons.favorite,
+                  color: _statusColorFor('hr', heartRate),
+                  statusLabel: _getStatusLabel('hr', heartRate),
+                  delta: hrDelta,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HeartRateDetailPage())),
+                ),
+                _HealthCard(
+                  title: '심박변이도',
+                  value: hrv.toString(),
+                  unit: 'ms',
+                  icon: Icons.multiline_chart,
+                  color: _statusColorFor('hrv', hrv),
+                  statusLabel: _getStatusLabel('hrv', hrv),
+                  delta: hrvDelta,
+                  onTap: () {},
+                ),
+                _HealthCard(
+                  title: '활동 시간',
+                  value: activityMinutes.toString(),
+                  unit: '분',
+                  icon: Icons.directions_walk,
+                  color: Colors.teal,
+                  statusLabel: '보통', // 더미
+                  delta: activityDelta,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StepsPage())),
                 ),
               ],
             ),
-            const SizedBox(height: 6),
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Text(
-                value,
-                style: _withTabular(
-                  _scale(
-                    Theme.of(context)
-                        .textTheme
-                        .titleLarge
-                        ?.copyWith(fontWeight: FontWeight.w800),
-                    1.0,
-                  ),
-                ),
+            const SizedBox(height: 32),
+
+            // 3. 실내 환경 (글씨 키움)
+            _SectionHeader(title: '우리 집 날씨'),
+            _EnvironmentBigCard(
+              temp: temp,
+              humidity: humidity,
+              co2: co2,
+              pm25: pm25,
+            ),
+            const SizedBox(height: 32),
+
+            // 4. 빠른 모드
+            _SectionHeader(title: '모드 변경'),
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))
+                ],
+              ),
+              child: Row(
+                children: [
+                  Expanded(child: _ModeToggleBtn(label: '수면', icon: Icons.bedtime_rounded, isSelected: _mode == QuickMode.sleep, onTap: () => _setMode(QuickMode.sleep))),
+                  Expanded(child: _ModeToggleBtn(label: '휴식', icon: Icons.spa_rounded, isSelected: _mode == QuickMode.rest, onTap: () => _setMode(QuickMode.rest))),
+                  Expanded(child: _ModeToggleBtn(label: '일상', icon: Icons.wb_sunny_rounded, isSelected: _mode == QuickMode.daily, onTap: () => _setMode(QuickMode.daily))),
+                ],
               ),
             ),
-            if (bottom != null) ...[
-              const SizedBox(height: 6),
-              bottom!,
-            ],
+            const SizedBox(height: 32),
+
+            // 5. 알림 (글씨 키움)
+            _SectionHeader(title: '최근 알림', trailing: TextButton(onPressed: (){}, child: const Text("더보기", style: TextStyle(fontSize: 16)))),
+            ..._lastNoti.map((n) => _NotificationCard(item: n)),
+            const SizedBox(height: 40),
           ],
         ),
-      );
-    }
-
-    return Container(
-      height: 86,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.10),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: color.withOpacity(0.35)),
       ),
+    );
+  }
+}
+
+// ------------------------------ 컴포넌트 (시니어 맞춤형) ------------------------------
+
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  final Widget? trailing;
+  const _SectionHeader({required this.title, this.trailing});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12, left: 4),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          CircleAvatar(
-            radius: 20,
-            backgroundColor: color.withOpacity(0.18),
-            child: Icon(icon, color: color),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  label,
-                  maxLines: 2,
-                  style: _scale(
-                    Theme.of(context)
-                        .textTheme
-                        .titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w700),
-                    typeScale,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    value,
-                    style: _withTabular(
-                      _scale(
-                        Theme.of(context)
-                            .textTheme
-                            .titleLarge
-                            ?.copyWith(fontWeight: FontWeight.w800),
-                        typeScale,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (trailing != null)
-            ConstrainedBox(
-              constraints: const BoxConstraints(minWidth: 0, maxWidth: 120),
-              child: FittedBox(fit: BoxFit.scaleDown, child: trailing),
-            ),
+          // 섹션 제목 크게
+          Text(title, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black87)),
+          if (trailing != null) trailing!,
         ],
       ),
     );
   }
 }
 
-class _ModeButton extends StatelessWidget {
-  final String label;
+// 1. 건강 카드 (원형 그래프 제거 -> 막대바 + 큰 글씨)
+class _HealthCard extends StatelessWidget {
+  final String title;
+  final String value;
+  final String unit;
   final IconData icon;
-  final VoidCallback onPressed;
-  final double typeScale;
-  final bool compact;
+  final Color color;
+  final String statusLabel; // "좋음", "보통" 텍스트
+  final int delta;
+  final VoidCallback? onTap;
 
-  const _ModeButton({
-    required this.label,
+  const _HealthCard({
+    required this.title,
+    required this.value,
+    required this.unit,
     required this.icon,
-    required this.onPressed,
-    required this.typeScale,
-    required this.compact,
+    required this.color,
+    required this.statusLabel,
+    required this.delta,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final c = Theme.of(context).colorScheme.primary;
-    return SizedBox(
-      height: compact ? 54 : 60,
-      child: ElevatedButton(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: c.withOpacity(0.10),
-          foregroundColor: c,
-          elevation: 0,
-          shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          textStyle: TextStyle(
-            fontSize: (16 * typeScale),
-            fontWeight: FontWeight.w700,
-          ),
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(24),
+      child: Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: [
+            BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 12, offset: const Offset(0, 6)),
+          ],
         ),
-        onPressed: onPressed,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Icon(icon, size: compact ? 18 : 20),
-            const SizedBox(width: 8),
-            Flexible(
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(label),
-              ),
+            // 상단: 아이콘 + 제목
+            Row(
+              children: [
+                Icon(icon, size: 20, color: color),
+                const SizedBox(width: 8),
+                Flexible(child: Text(title, style: TextStyle(fontSize: 15, color: Colors.grey[700], fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
+              ],
+            ),
+
+            // 중단: 아주 큰 값
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: [
+                    Text(value, style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w800, color: Colors.black87, height: 1.0)),
+                    const SizedBox(width: 4),
+                    Text(unit, style: TextStyle(fontSize: 14, color: Colors.grey[600], fontWeight: FontWeight.w500)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                // 하단: 막대 바 + 상태 텍스트 (직관적)
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: color.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(statusLabel, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
+                    ),
+                    const Spacer(),
+                    _DeltaIcon(delta: delta),
+                  ],
+                )
+              ],
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _DeltaIcon extends StatelessWidget {
+  final int delta;
+  const _DeltaIcon({required this.delta});
+  @override
+  Widget build(BuildContext context) {
+    if (delta == 0) return const SizedBox.shrink();
+    final isUp = delta > 0;
+    // 건강 수치는 오르는게 좋은 경우도 있고 나쁜 경우도 있지만, 여기선 빨강/파랑으로 단순 등락 표시
+    // 시니어 배려: 색상보다는 화살표 모양으로 인지하도록
+    return Icon(
+      isUp ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
+      size: 20,
+      color: Colors.grey[400],
+    );
+  }
+}
+
+// 2. 실내 환경 카드 (글씨를 아주 크게, 2x2 배치)
+class _EnvironmentBigCard extends StatelessWidget {
+  final double temp;
+  final double humidity;
+  final int co2;
+  final double pm25;
+
+  const _EnvironmentBigCard({required this.temp, required this.humidity, required this.co2, required this.pm25});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 12, offset: const Offset(0, 6)),
+        ],
+      ),
+      child: Column(
+        children: [
+          // 상단: 온도와 습도 (가장 중요하므로 크게)
+          Row(
+            children: [
+              Expanded(child: _EnvBigItem(icon: Icons.thermostat, label: "온도", value: temp.toStringAsFixed(1), unit: "°C", color: Colors.redAccent)),
+              Container(width: 1, height: 60, color: Colors.grey[200]),
+              Expanded(child: _EnvBigItem(icon: Icons.water_drop, label: "습도", value: humidity.round().toString(), unit: "%", color: Colors.blueAccent)),
+            ],
+          ),
+          const SizedBox(height: 24),
+          const Divider(height: 1, thickness: 1, color: Color(0xFFF0F0F0)),
+          const SizedBox(height: 24),
+          // 하단: 공기질 (조금 작게)
+          Row(
+            children: [
+              Expanded(child: _EnvSmallItem(label: "이산화탄소", value: "$co2", unit: "ppm", isGood: co2 < 1000)),
+              Expanded(child: _EnvSmallItem(label: "미세먼지", value: "${pm25.round()}", unit: "µg", isGood: pm25 < 35)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EnvBigItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final String unit;
+  final Color color;
+  const _EnvBigItem({required this.icon, required this.label, required this.value, required this.unit, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 20, color: Colors.grey[500]),
+            const SizedBox(width: 6),
+            Text(label, style: TextStyle(fontSize: 16, color: Colors.grey[600], fontWeight: FontWeight.w600)),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(value, style: const TextStyle(fontSize: 38, fontWeight: FontWeight.w800, color: Colors.black87, height: 1.0)),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 5, left: 4),
+              child: Text(unit, style: TextStyle(fontSize: 16, color: Colors.grey[500], fontWeight: FontWeight.w600)),
+            ),
+          ],
+        )
+      ],
+    );
+  }
+}
+
+class _EnvSmallItem extends StatelessWidget {
+  final String label;
+  final String value;
+  final String unit;
+  final bool isGood;
+  const _EnvSmallItem({required this.label, required this.value, required this.unit, required this.isGood});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(label, style: TextStyle(fontSize: 14, color: Colors.grey[500])),
+        const SizedBox(height: 4),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black87)),
+            Text(unit, style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+            const SizedBox(width: 6),
+            // 상태 점
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: isGood ? Colors.green.withOpacity(0.1) : Colors.orange.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(isGood ? "좋음" : "주의", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: isGood ? Colors.green : Colors.orange)),
+            )
+          ],
+        )
+      ],
+    );
+  }
+}
+
+// 3. 모드 버튼 (더 크고 누르기 쉽게)
+class _ModeToggleBtn extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _ModeToggleBtn({required this.label, required this.icon, required this.isSelected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        padding: const EdgeInsets.symmetric(vertical: 16), // 세로 길이 늘림
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.indigoAccent : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: isSelected ? Colors.white : Colors.grey[400], size: 28), // 아이콘 크기 확대
+            const SizedBox(height: 6),
+            Text(label, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: isSelected ? Colors.white : Colors.grey[600])),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// 4. 알림 카드 (글씨 확대)
+class _NotificationCard extends StatelessWidget {
+  final _NotificationItem item;
+  const _NotificationCard({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8, offset: const Offset(0, 2)),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: item.isAlert ? Colors.red[50] : Colors.blue[50],
+              shape: BoxShape.circle,
+            ),
+            child: Icon(item.icon, size: 22, color: item.isAlert ? Colors.redAccent : Colors.blueAccent),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(item.text, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black87), maxLines: 2),
+                const SizedBox(height: 4),
+                Text(item.time, style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -954,128 +619,30 @@ class _ModeButton extends StatelessWidget {
 class _NotificationItem {
   final IconData icon;
   final String text;
-  const _NotificationItem({required this.icon, required this.text});
+  final String time;
+  final bool isAlert;
+  const _NotificationItem({required this.icon, required this.text, required this.time, required this.isAlert});
 }
 
-class _NotiTile extends StatelessWidget {
-  final _NotificationItem item;
-  final double typeScale;
-  const _NotiTile({required this.item, required this.typeScale});
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      dense: false,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 0),
-      leading: CircleAvatar(
-        backgroundColor:
-        Theme.of(context).colorScheme.primary.withOpacity(0.12),
-        child: Icon(item.icon, color: Theme.of(context).colorScheme.primary),
-      ),
-      title: Text(
-        item.text,
-        maxLines: 3,
-        style: _scale(const TextStyle(fontWeight: FontWeight.w600), typeScale),
-      ),
-      trailing: const Icon(Icons.chevron_right),
-      onTap: () {},
-    );
-  }
-}
-
-enum _Grade { good, warn, bad }
-
-// ------------------------------ 헬퍼 ------------------------------
-
-void showOneShotSnackBar(BuildContext context, String text) {
-  final m = ScaffoldMessenger.of(context)
-    ..removeCurrentSnackBar()
-    ..clearSnackBars();
-  m.showSnackBar(
-    SnackBar(
-      content: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
-      duration: const Duration(milliseconds: 900),
-      behavior: SnackBarBehavior.floating,
-      margin: const EdgeInsets.all(12),
-    ),
-  );
-}
-
-// 날짜 헬퍼
-String _weekdayKR(int wd) {
-  const m = {1: '월', 2: '화', 3: '수', 4: '목', 5: '금', 6: '토', 7: '일'};
-  return m[wd] ?? '';
-}
-
-String _two(int x) => x.toString().padLeft(2, '0');
-
-TextStyle? _scale(TextStyle? s, double f) =>
-    s?.copyWith(fontSize: (s.fontSize ?? 14) * f);
-
-TextStyle? _withTabular(TextStyle? s) =>
-    s?.copyWith(fontFeatures: const [FontFeature.tabularFigures()]);
-
-String _badgeFor(_Grade g) => g == _Grade.good ? '' : ' ⚠︎';
-
-String _fmtInt(int x) => NumberFormat.decimalPattern('ko').format(x);
-
+// 헬퍼 함수들
 Color _statusColorFor(String key, num value) {
-  switch (key) {
-    case 'sleep':
-      if (value >= 80) return Colors.green;
-      if (value >= 60) return Colors.orange;
-      return Colors.red;
-    case 'hr':
-      if (value >= 50 && value <= 90) return Colors.green;
-      if ((value > 90 && value <= 100) || (value >= 45 && value < 50)) {
-        return Colors.orange;
-      }
-      return Colors.red;
-    case 'hrv':
-      if (value >= 50) return Colors.green;
-      if (value >= 30) return Colors.orange;
-      return Colors.red;
-    case 'resp':
-      if (value >= 12 && value <= 18) return Colors.green;
-      if ((value >= 10 && value < 12) || (value > 18 && value <= 20)) {
-        return Colors.orange;
-      }
-      return Colors.red;
-  }
-  return Colors.grey;
+  if (key == 'sleep' && value >= 80) return Colors.indigoAccent;
+  if (key == 'hr' && (value >= 60 && value <= 100)) return Colors.redAccent;
+  if (key == 'hrv' && value >= 40) return Colors.green;
+  return Colors.orangeAccent;
 }
 
-_Grade _gradeTemp(double c) {
-  if (c >= 20 && c <= 24) return _Grade.good;
-  if ((c > 24 && c <= 27) || (c >= 18 && c < 20)) return _Grade.warn;
-  return _Grade.bad;
+String _getStatusLabel(String key, num value) {
+  if (key == 'sleep') return value >= 80 ? "충분함" : "부족함";
+  if (key == 'hr') return (value >= 60 && value <= 100) ? "정상" : "주의";
+  if (key == 'hrv') return value >= 40 ? "안정됨" : "스트레스";
+  return "보통";
 }
-
-_Grade _gradeHum(double h) {
-  if (h >= 40 && h <= 60) return _Grade.good;
-  if ((h >= 30 && h < 40) || (h > 60 && h <= 70)) return _Grade.warn;
-  return _Grade.bad;
-}
-
-_Grade _gradeCO2(int x) {
-  if (x < 1000) return _Grade.good;
-  if (x <= 1500) return _Grade.warn;
-  return _Grade.bad;
-}
-
-_Grade _gradePM25(double x) {
-  if (x < 15) return _Grade.good;
-  if (x <= 35) return _Grade.warn;
-  return _Grade.bad;
-}
-
-Color _colorForGrade(_Grade g) =>
-    g == _Grade.good ? Colors.green : (g == _Grade.warn ? Colors.orange : Colors.red);
 
 String _greeting(DateTime now) {
   final h = now.hour;
-  if (h < 6) return '늦은 밤이에요. 푹 쉬어요~';
-  if (h < 12) return '좋은 아침이에요!';
-  if (h < 18) return '좋은 오후예요!';
-  return '좋은 저녁이에요!';
+  if (h < 6) return '편안한 밤\n보내고 계신가요? 🌙';
+  if (h < 11) return '상쾌한 아침,\n건강을 챙겨보세요 ☀️';
+  if (h < 18) return '나른한 오후,\n스트레칭 어때요? 🌿';
+  return '오늘 하루도\n고생 많으셨어요 ✨';
 }

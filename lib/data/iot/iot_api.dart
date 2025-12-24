@@ -14,6 +14,8 @@ abstract class IotApi {
   Future<AirconState> setAirconTemp(int temp);
   Future<AirconState> setAirconMode(AcMode mode);
   Future<AirconState> setAirconTimer(int hours);
+  Future<AirconState> setAirconFanSpeed(AcFanSpeed speed);
+  Future<AirconState> setAirconSwing(bool isSwing);
 
   // HRV
   Future<HrvState> setHrvPower(bool on);

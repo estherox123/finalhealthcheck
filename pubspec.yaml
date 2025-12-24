@@ -28,6 +28,7 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  http: ^1.2.1
   pdf: ^3.10.7
   printing: ^5.12.0
   share_plus: ^10.0.0
@@ -42,7 +43,7 @@ dependencies:
   permission_handler: ^11.3.1
   android_intent_plus: ^5.1.0   # ← 옵션 (설정화면 이동용)
   package_info_plus: ^4.2.0
-  shared_preferences: ^2.2.0
+  shared_preferences: ^2.2.2
   url_launcher: ^6.3.2
 
   # The following adds the Cupertino Icons font to your application.
