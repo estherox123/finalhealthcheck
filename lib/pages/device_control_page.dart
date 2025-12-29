@@ -20,19 +20,22 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
   @override
   void initState() {
     super.initState();
-    _c = DeviceControlController(IotRepository(_createApi()));
-    _c.addListener(() => setState(() {}));
-    _c.init();
+    // IoT 컨트롤러 초기화
+    try {
+      final api = HomeAssistantApi(options: HomeAssistantOptions.fromEnv());
+      final repo = IotRepository(api);
+      _c = DeviceControlController(repo);
+      _c.addListener(() => setState(() {}));
+      _c.init();
+    } catch (e) {
+      debugPrint("IoT Controller Init Error: $e");
+    }
   }
 
-  IotApi _createApi() {
-    final opts = HomeAssistantOptions.fromEnv();
-    if (!opts.isConfigured) {
-      throw StateError(
-        'Home Assistant 연동 정보가 없습니다. flutter run 시 환경변수를 설정하세요.',
-      );
-    }
-    return HomeAssistantApi(options: opts);
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
   }
 
   @override
@@ -47,6 +50,12 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
         backgroundColor: const Color(0xFFF5F7FA),
         elevation: 0,
         foregroundColor: Colors.black,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _c.init(),
+          )
+        ],
       ),
       body: RefreshIndicator(
         onRefresh: () => _c.init(),
@@ -54,13 +63,10 @@ class _DeviceControlPageState extends State<DeviceControlPage> {
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
           children: [
             _SectionTitle('에어컨'),
+            // ✅ 컨트롤러를 전달하여 색상 로직이 적용된 카드 사용
             _AirconCard(
               state: snap.aircon,
-              onToggle: _c.toggleAc,
-              onTempSlider: _c.setTargetTemperature,
-              onSetMode: _c.setAcMode,
-              onSetFanSpeed: _c.setAcFanSpeed,
-              onSetTimer: _c.setAcTimer,
+              controller: _c,
               loading: loading,
             ),
             const SizedBox(height: 24),
@@ -108,22 +114,21 @@ class _SectionTitle extends StatelessWidget {
   );
 }
 
-// ================================ [1] 에어컨 카드 (기존 유지) ================================
+// ================================ [1] 에어컨 카드 (수정됨) ================================
 class _AirconCard extends StatelessWidget {
   final AirconState state;
-  final VoidCallback onToggle;
-  final void Function(double) onTempSlider;
-  final void Function(AcMode) onSetMode;
-  final void Function(AcFanSpeed) onSetFanSpeed;
-  final void Function(int) onSetTimer;
+  final DeviceControlController controller; // 컨트롤러 주입
   final bool loading;
 
-  const _AirconCard({required this.state, required this.onToggle, required this.onTempSlider, required this.onSetMode, required this.onSetFanSpeed, required this.onSetTimer, required this.loading});
+  const _AirconCard({required this.state, required this.controller, required this.loading});
 
   @override
   Widget build(BuildContext context) {
     final bool on = state.isOn;
-    final bgColor = on ? const Color(0xFFEBF7F8) : Colors.white;
+
+    // ✅ 컨트롤러에서 계산된 색상 사용 (배경색/강조색)
+    final bgColor = controller.uiColor;
+    final activeColor = controller.activeColor;
 
     return Container(
       decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(24), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15, offset: const Offset(0, 5))]),
@@ -138,7 +143,7 @@ class _AirconCard extends StatelessWidget {
                   Text(on ? state.mode.label : '꺼짐', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: on ? Colors.black87 : Colors.grey)),
                   if (!on) ...[const SizedBox(height: 4), Text("실내 ${state.currentTemperature}°C", style: const TextStyle(fontSize: 13, color: Colors.grey))]
                 ]),
-                _PowerButton(on: on, onPressed: loading ? null : onToggle),
+                _PowerButton(on: on, onPressed: loading ? null : controller.toggleAc),
               ],
             ),
           ),
@@ -151,8 +156,8 @@ class _AirconCard extends StatelessWidget {
                 Text("${state.temperature}°C", style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w300, color: Colors.black87, letterSpacing: -1.5)),
                 const SizedBox(height: 10),
                 SliderTheme(
-                  data: SliderThemeData(trackHeight: 6, activeTrackColor: const Color(0xFF4A6AFF), inactiveTrackColor: const Color(0xFFD1D9FF), thumbColor: const Color(0xFF4A6AFF), overlayColor: const Color(0xFF4A6AFF).withOpacity(0.1), thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 10)),
-                  child: Slider(value: state.temperature.toDouble(), min: 18, max: 30, divisions: 12, onChanged: loading ? null : onTempSlider),
+                  data: SliderThemeData(trackHeight: 6, activeTrackColor: activeColor, inactiveTrackColor: activeColor.withOpacity(0.2), thumbColor: activeColor, overlayColor: activeColor.withOpacity(0.1), thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 10)),
+                  child: Slider(value: state.temperature.toDouble(), min: 18, max: 30, divisions: 12, onChanged: loading ? null : controller.setTargetTemperature),
                 ),
               ]),
             ),
@@ -160,9 +165,11 @@ class _AirconCard extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(children: [
-                Expanded(child: _ControlBox(title: "운전 모드", icon: _getModeIcon(state.mode), value: state.mode.label, color: const Color(0xFFE3F2FD), onTap: () => _showModePicker(context))),
+                // 모드 선택 버튼
+                Expanded(child: _ControlBox(title: "운전 모드", icon: _getModeIcon(state.mode), value: state.mode.label, color: Colors.white, onTap: () => _showModePicker(context))),
                 const SizedBox(width: 12),
-                Expanded(child: _ControlBox(title: "바람 세기", icon: Icons.wind_power, value: _fanSpeedToString(state.fanSpeed), color: const Color(0xFFE0F2F1), onTap: () => _showFanSpeedPicker(context))),
+                // 바람 세기 버튼
+                Expanded(child: _ControlBox(title: "바람 세기", icon: Icons.wind_power, value: _fanSpeedToString(state.fanSpeed), color: Colors.white, onTap: () => _showFanSpeedPicker(context))),
               ]),
             ),
             const SizedBox(height: 12),
@@ -179,17 +186,17 @@ class _AirconCard extends StatelessWidget {
                 ]),
                 const SizedBox(height: 16),
                 Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  _SleepTimerBtn(label: "해제", selected: state.timerHours == 0, onTap: () => onSetTimer(0)),
-                  _SleepTimerBtn(label: "1시간", selected: state.timerHours == 1, onTap: () => onSetTimer(1)),
-                  _SleepTimerBtn(label: "2시간", selected: state.timerHours == 2, onTap: () => onSetTimer(2)),
-                  _SleepTimerBtn(label: "4시간", selected: state.timerHours == 4, onTap: () => onSetTimer(4)),
+                  _SleepTimerBtn(label: "해제", selected: state.timerHours == 0, onTap: () => controller.setAcTimer(0)),
+                  _SleepTimerBtn(label: "1시간", selected: state.timerHours == 1, onTap: () => controller.setAcTimer(1)),
+                  _SleepTimerBtn(label: "2시간", selected: state.timerHours == 2, onTap: () => controller.setAcTimer(2)),
+                  _SleepTimerBtn(label: "4시간", selected: state.timerHours == 4, onTap: () => controller.setAcTimer(4)),
                 ])
               ]),
             ),
             const SizedBox(height: 10),
           ] else ...[
             const SizedBox(height: 30),
-            Center(child: Image.asset('assets/images/ac_off.png', height: 100, errorBuilder: (c, e, s) => const Icon(Icons.ac_unit, size: 80, color: Colors.black12))),
+            const Center(child: Icon(Icons.ac_unit, size: 80, color: Colors.black12)), // 이미지 대신 아이콘 사용
             const SizedBox(height: 40),
           ]
         ],
@@ -204,13 +211,15 @@ class _AirconCard extends StatelessWidget {
     switch (s) { case AcFanSpeed.auto: return '자동'; case AcFanSpeed.low: return '약풍'; case AcFanSpeed.medium: return '중풍'; case AcFanSpeed.high: return '강풍'; }
   }
   void _showModePicker(BuildContext context) {
-    showModalBottomSheet(context: context, backgroundColor: Colors.white, shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))), builder: (_) => Container(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [const Text("운전 모드 선택", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 20), Wrap(spacing: 12, runSpacing: 12, children: AcMode.values.map((m) => _OptionChip(label: m.label, selected: state.mode == m, onSelected: () { onSetMode(m); Navigator.pop(context); })).toList())])));
+    showModalBottomSheet(context: context, backgroundColor: Colors.white, shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))), builder: (_) => Container(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [const Text("운전 모드 선택", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 20), Wrap(spacing: 12, runSpacing: 12, children: AcMode.values.map((m) => _OptionChip(label: m.label, selected: state.mode == m, onSelected: () { controller.setAcMode(m); Navigator.pop(context); })).toList())])));
   }
   void _showFanSpeedPicker(BuildContext context) {
-    showModalBottomSheet(context: context, backgroundColor: Colors.white, shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))), builder: (_) => Container(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [const Text("바람 세기 선택", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 20), Wrap(spacing: 12, runSpacing: 12, children: AcFanSpeed.values.map((s) => _OptionChip(label: _fanSpeedToString(s), selected: state.fanSpeed == s, onSelected: () { onSetFanSpeed(s); Navigator.pop(context); })).toList())])));
+    showModalBottomSheet(context: context, backgroundColor: Colors.white, shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))), builder: (_) => Container(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [const Text("바람 세기 선택", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), const SizedBox(height: 20), Wrap(spacing: 12, runSpacing: 12, children: AcFanSpeed.values.map((s) => _OptionChip(label: _fanSpeedToString(s), selected: state.fanSpeed == s, onSelected: () { controller.setAcFanSpeed(s); Navigator.pop(context); })).toList())])));
   }
 }
 
+// (나머지 위젯들: _AirpassCard, _BlindsCard, _LightsColumn 등은 기존 코드 유지)
+// 공간 절약을 위해 생략했으나, 원본 코드의 나머지 부분을 그대로 붙여넣으시면 됩니다.
 // ================================ [2] 환기 카드 (리뉴얼) ================================
 class _AirpassCard extends StatelessWidget {
   final bool isOn;
@@ -470,7 +479,7 @@ class _ControlBox extends StatelessWidget {
       child: Container(
         height: 100,
         padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+        decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(20)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Icon(icon, color: Colors.grey[700], size: 24), Icon(Icons.arrow_forward_ios, size: 12, color: Colors.grey[300])]),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: TextStyle(fontSize: 12, color: Colors.grey[500])), const SizedBox(height: 2), Text(value, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87))])

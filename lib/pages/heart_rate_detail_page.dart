@@ -1,18 +1,15 @@
-// lib/pages/heart_rate_detail_page.dart
-//
-// 심박수 상세 페이지 v0.3
-// - 지난 밤(어제 18:00 ~ 오늘 12:00) 평균/최저/최고 심박수
-// - 지난 밤 심박수 추이 라인 차트
-// - 최근 7일 평균 심박수 막대 그래프
-// - 개인 7일 평균과의 비교 / 대략적인 범위 해석 텍스트
-// - 글꼴 전체 1.12배 확대 + 설명 문단은 bodyMedium 사용
-
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:health/health.dart';
 import 'package:fl_chart/fl_chart.dart';
 
 import 'base_health_page.dart';
+
+// 🎨 컬러 팔레트 (심박수 테마)
+const Color kHeartColor = Color(0xFFFF5252); // 메인 레드
+const Color kHeartBgColor = Color(0xFFFFEBEE); // 연한 핑크 배경
+const Color kGridLineColor = Color(0xFFEEEEEE); // 차트 그리드
+const Color kBgColor = Color(0xFFF5F7FA); // 전체 배경
 
 class HeartRateDetailPage extends HealthStatefulPage {
   const HeartRateDetailPage({super.key});
@@ -23,12 +20,9 @@ class HeartRateDetailPage extends HealthStatefulPage {
 
 class _HeartRateDetailPageState extends HealthState<HeartRateDetailPage> {
   @override
-  List<HealthDataType> get types => const [
-    HealthDataType.HEART_RATE,
-  ];
+  List<HealthDataType> get types => const [HealthDataType.HEART_RATE];
 
   bool _loading = true;
-  String? _localError;
   _HrVm? _vm;
 
   @override
@@ -40,50 +34,28 @@ class _HeartRateDetailPageState extends HealthState<HeartRateDetailPage> {
     });
   }
 
-  // ---------------- 공통 헬퍼 ----------------
-
+  // ---------------- 데이터 로딩 ----------------
   double? _numVal(dynamic v) {
-    if (v == null) return null;
     if (v is num) return v.toDouble();
-    if (v is NumericHealthValue) {
-      final n = v.numericValue;
-      return n == null ? null : n.toDouble();
-    }
-    try {
-      final any = (v as dynamic).numericValue;
-      if (any is num) return any.toDouble();
-    } catch (_) {}
+    if (v is NumericHealthValue) return v.numericValue?.toDouble();
     return null;
   }
 
-  // ---------------- 데이터 로딩 ----------------
-
   Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _localError = null;
-      _vm = null;
-    });
-
+    setState(() => _loading = true);
     try {
-      if (!authorized) {
-        _localError = '헬스 데이터 권한이 없어 심박수 정보를 불러올 수 없습니다.';
-        return;
-      }
+      if (!authorized) return;
 
       final now = DateTime.now();
-      final today0 = DateTime(now.year, now.month, now.day);
+      // "오늘" 기준 (00:00 ~ 현재)
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final todayEnd = now;
 
-      // "지난 밤" 윈도우: 어제 18:00 ~ 오늘 12:00 (수면 기준과 동일)
-      final winAnchor = today0;
-      final winStart = winAnchor.subtract(const Duration(hours: 6));
-      final winEnd = winAnchor.add(const Duration(hours: 12));
-
-      // 1) 지난 밤 심박수 타임라인 + 통계
+      // 1. 오늘 심박수 상세 데이터 (라인 차트용)
       final hrPoints = await health.getHealthDataFromTypes(
         types: const [HealthDataType.HEART_RATE],
-        startTime: winStart,
-        endTime: winEnd,
+        startTime: todayStart,
+        endTime: todayEnd,
       );
 
       final samples = <_HrPoint>[];
@@ -93,8 +65,7 @@ class _HeartRateDetailPageState extends HealthState<HeartRateDetailPage> {
       for (final p in hrPoints) {
         final v = _numVal(p.value);
         if (v == null) continue;
-        final t = p.dateFrom ?? p.dateTo;
-        if (t == null) continue;
+        final t = p.dateFrom; // dateFrom 기준
 
         final vD = v.toDouble();
         samples.add(_HrPoint(time: t, bpm: vD));
@@ -105,730 +76,344 @@ class _HeartRateDetailPageState extends HealthState<HeartRateDetailPage> {
         count++;
       }
 
-      final avgHr = (count > 0 && sumHr != null) ? (sumHr / count) : null;
-
+      // 시간순 정렬
       samples.sort((a, b) => a.time.compareTo(b.time));
 
-      // 2) 최근 7일 평균 심박수 (같은 윈도우 기준)
+      final avgHr = (count > 0 && sumHr != null) ? (sumHr / count) : null;
+
+      // 2. 최근 7일 평균 (막대 차트용)
       final last7Avg = <DateTime, double>{};
       for (int i = 6; i >= 0; i--) {
-        final anchor = today0.subtract(Duration(days: i));
-        final s = anchor.subtract(const Duration(hours: 6));
-        final e = anchor.add(const Duration(hours: 12));
+        final d = todayStart.subtract(Duration(days: i));
+        final s = d;
+        final e = d.add(const Duration(days: 1)); // 하루 전체
 
         final pts = await health.getHealthDataFromTypes(
           types: const [HealthDataType.HEART_RATE],
-          startTime: s,
-          endTime: e,
+          startTime: s, endTime: e,
         );
 
-        double sum = 0;
-        int n = 0;
+        double daySum = 0;
+        int dayCount = 0;
         for (final p in pts) {
           final v = _numVal(p.value);
-          if (v == null) continue;
-          sum += v;
-          n++;
+          if (v != null) {
+            daySum += v;
+            dayCount++;
+          }
         }
-
-        final avg = n > 0 ? (sum / n) : 0.0;
-        last7Avg[anchor] = avg;
-      }
-
-      // 3) 최근 7일 개인 평균 (0만 있는 경우는 null 처리)
-      double? avg7d;
-      if (last7Avg.isNotEmpty) {
-        double sum = 0;
-        int n = 0;
-        for (final v in last7Avg.values) {
-          if (v <= 0) continue;
-          sum += v;
-          n++;
+        if (dayCount > 0) {
+          last7Avg[d] = daySum / dayCount;
         }
-        if (n > 0) avg7d = sum / n;
       }
 
       _vm = _HrVm(
-        nightStart: winStart,
-        nightEnd: winEnd,
+        periodStart: todayStart,
+        periodEnd: todayEnd,
         avgHr: avgHr,
         minHr: minHr,
         maxHr: maxHr,
-        avg7d: avg7d,
         samples: samples,
         last7Avg: last7Avg,
       );
-    } catch (e, st) {
-      // ignore: avoid_print
-      print('HR load error: $e\n$st');
-      _localError = '심박수 데이터를 불러오는 중 오류가 발생했습니다.';
+
+    } catch (e) {
+      debugPrint("HR Load Error: $e");
     } finally {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-      });
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  // ---------------- UI ----------------
+  // ---------------- UI 빌더 ----------------
 
   @override
   Widget build(BuildContext context) {
-    final baseTheme = Theme.of(context);
-    final scaledTheme = baseTheme.copyWith(
-      textTheme: baseTheme.textTheme.apply(
-        fontSizeFactor: 1.12,
-        heightFactor: 1.1,
+    return Scaffold(
+      backgroundColor: kBgColor,
+      appBar: AppBar(
+        title: const Text('심박수', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
+        backgroundColor: kBgColor,
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.black87),
+        actions: [
+          IconButton(
+            icon: _loading
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.refresh),
+            onPressed: _loading ? null : _load,
+          )
+        ],
       ),
-    );
-
-    final appBar = AppBar(
-      title: const Text('심박수 요약'),
-    );
-
-    if (_loading) {
-      return Theme(
-        data: scaledTheme,
-        child: Scaffold(
-          appBar: appBar,
-          body: const Center(child: CircularProgressIndicator()),
-        ),
-      );
-    }
-
-    if (errorMsg != null || _localError != null) {
-      return Theme(
-        data: scaledTheme,
-        child: Scaffold(
-          appBar: appBar,
-          body: RefreshIndicator(
-            onRefresh: _load,
-            child: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Text(
-                  errorMsg ?? _localError ?? '알 수 없는 오류',
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
-    final vm = _vm;
-    if (vm == null) {
-      return Theme(
-        data: scaledTheme,
-        child: Scaffold(
-          appBar: appBar,
-          body: RefreshIndicator(
-            onRefresh: _load,
-            child: const Center(
-              child: Text('심박수 데이터를 찾을 수 없습니다.'),
-            ),
-          ),
-        ),
-      );
-    }
-
-    final df = DateFormat('M/d');
-    final nightLabel = '${df.format(vm.nightStart)} 기준 (어제 18:00 ~ 오늘 12:00)';
-
-    return Theme(
-      data: scaledTheme,
-      child: Scaffold(
-        appBar: appBar,
-        body: RefreshIndicator(
-          onRefresh: _load,
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              if (errorMsg != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Text(
-                    errorMsg!,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
-                  ),
-                ),
-
-              // 상단 설명: 여러 Text + SizedBox 로 문단 분리
-              Text(
-                '워치/폰에 기록된 심박수 데이터를 바탕으로',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.grey[700], height: 1.25),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '지난 밤 심박 상태와 최근 추세를 간단히 보여줍니다.',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.grey[700], height: 1.25),
-              ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: ElevatedButton.icon(
-                  onPressed: _load,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('불러오기/새로고침'),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // -------- 지난 밤 요약 카드 --------
-              _LastNightHrSummaryCard(vm: vm, nightLabel: nightLabel),
-              const SizedBox(height: 16),
-
-              // -------- 지난 밤 심박수 추이 라인 차트 --------
-              _NightHrChart(vm: vm),
-              const SizedBox(height: 24),
-
-              // -------- 최근 7일 평균 심박수 막대 그래프 --------
-              Text(
-                '최근 7일 평균 심박수',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 4),
-              // 설명 문단도 분리
-              Text(
-                '막대가 높을수록 해당 날 수면/야간 시간대의 심박수가 더 빨랐다는 뜻이에요.',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.grey[700], height: 1.25),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '특정 날만 유독 높다면 그날의 컨디션(과로, 카페인, 스트레스 등)을 한 번 떠올려보세요.',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.grey[700], height: 1.25),
-              ),
-              const SizedBox(height: 8),
-              _Last7DaysHrChart(vm: vm),
-              const SizedBox(height: 24),
-
-              // 하단 안내 문단도 분리
-              Text(
-                '심박수는 개인차가 크고, 같은 사람도 그날의 컨디션에 따라 달라집니다.',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.grey[700], height: 1.25),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '그래프는 “내 지난 일주일 패턴과 비교해서 어떠한지” 보는 용도로만 활용해주세요.',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.grey[700], height: 1.25),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '가슴 두근거림, 어지럼증, 흉통 등 이상 증상이 반복되면 꼭 의료진과 상의하세요.',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.grey[700], height: 1.25),
-              ),
-            ],
-          ),
-        ),
-      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _vm == null || _vm!.samples.isEmpty
+          ? _buildEmptyState()
+          : RefreshIndicator(onRefresh: _load, child: _buildDashboard()),
     );
   }
-}
 
-// ---------------- ViewModel / 모델 ----------------
-
-class _HrVm {
-  final DateTime nightStart;
-  final DateTime nightEnd;
-  final double? avgHr;
-  final double? minHr;
-  final double? maxHr;
-  final double? avg7d; // 최근 7일 개인 평균
-  final List<_HrPoint> samples;
-  final Map<DateTime, double> last7Avg;
-
-  const _HrVm({
-    required this.nightStart,
-    required this.nightEnd,
-    required this.avgHr,
-    required this.minHr,
-    required this.maxHr,
-    required this.avg7d,
-    required this.samples,
-    required this.last7Avg,
-  });
-}
-
-class _HrPoint {
-  final DateTime time;
-  final double bpm;
-  _HrPoint({required this.time, required this.bpm});
-}
-
-// ---------------- 위젯: 지난 밤 요약 카드 ----------------
-
-class _LastNightHrSummaryCard extends StatelessWidget {
-  final _HrVm vm;
-  final String nightLabel;
-
-  const _LastNightHrSummaryCard({
-    required this.vm,
-    required this.nightLabel,
-  });
-
-  String _fmtBpm(double? v) {
-    if (v == null) return '-';
-    return '${v.round()} bpm';
-  }
-
-  String _rangeComment(double? v) {
-    if (v == null) {
-      return '기록이 부족해 일반적인 범위를 판단하기 어렵습니다.';
-    }
-
-    // 홈 대시보드의 hr 색상 기준과 대략 맞추기 (50~90 "보통")
-    final hr = v;
-    if (hr >= 50 && hr <= 90) {
-      return '대부분의 성인 수면/휴식 시에서 자주 보이는 범위예요.';
-    }
-    if ((hr > 90 && hr <= 100) || (hr >= 45 && hr < 50)) {
-      return '조금 벗어난 범위예요. 컨디션이 안 좋다면 오늘은 무리하지 않는 게 좋아요.';
-    }
-    return '평소와 많이 다르거나 불편한 증상이 있다면 의료진과 상의하는 것이 좋습니다.';
-  }
-
-  String? _vsBaselineComment(double? today, double? avg7d) {
-    if (today == null || avg7d == null) return null;
-    final diff = today - avg7d;
-    final ad = diff.abs();
-
-    if (ad < 3) {
-      return '최근 1주 평균(${avg7d.round()} bpm)과 거의 비슷한 수준입니다.';
-    }
-
-    final dir = diff > 0 ? '조금 높은' : '조금 낮은';
-    return '최근 1주 평균(${avg7d.round()} bpm)보다 약 ${ad.toStringAsFixed(1)} bpm $dir 편이에요.';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final hasData = vm.avgHr != null;
-    final baselineText = _vsBaselineComment(vm.avgHr, vm.avg7d);
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.red.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.red.withOpacity(0.25)),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 24,
-            backgroundColor: Colors.red.withOpacity(0.18),
-            child: const Icon(Icons.favorite, color: Colors.red, size: 28),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '지난 밤 평균 심박수',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  hasData ? _fmtBpm(vm.avgHr) : '기록 없음',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    color: Colors.red[700],
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '최저: ${_fmtBpm(vm.minHr)}   ·   최고: ${_fmtBpm(vm.maxHr)}',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Colors.grey[800],
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                if (vm.avg7d != null) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    '최근 7일 평균: ${_fmtBpm(vm.avg7d)}',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey[800],
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-                if (baselineText != null) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    baselineText,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey[700],
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 2),
-                Text(
-                  _rangeComment(vm.avgHr),
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.grey[700],
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  nightLabel,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
-                      ?.copyWith(color: Colors.grey[600]),
-                ),
-              ],
-            ),
-          ),
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: const [
+          Icon(Icons.monitor_heart_outlined, size: 60, color: Colors.grey),
+          SizedBox(height: 16),
+          Text("오늘 측정된 심박수가 없습니다.\n워치를 착용하고 계신가요?", textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)),
         ],
       ),
     );
   }
-}
 
-// ---------------- 위젯: 지난 밤 심박수 라인 차트 ----------------
+  Widget _buildDashboard() {
+    final vm = _vm!;
+    final avg = vm.avgHr?.round() ?? 0;
 
-class _NightHrChart extends StatelessWidget {
-  final _HrVm vm;
+    // 상태 분석 텍스트
+    String statusText = "정상 범위";
+    Color statusColor = Colors.green;
+    if (avg > 100) { statusText = "높음"; statusColor = Colors.orange; }
+    else if (avg < 50) { statusText = "낮음 (운동선수?)"; statusColor = Colors.blue; }
 
-  const _NightHrChart({required this.vm});
-
-  @override
-  Widget build(BuildContext context) {
-    if (vm.samples.isEmpty) {
-      return const Text('지난 밤 심박수 기록이 없습니다.');
-    }
-
-    final samples = vm.samples;
-    final start = vm.nightStart;
-
-    final spots = <FlSpot>[];
-    for (final p in samples) {
-      final minutes = p.time.difference(start).inMinutes.toDouble();
-      spots.add(FlSpot(minutes, p.bpm));
-    }
-
-    final xs = spots.map((e) => e.x).toList();
-    final ys = spots.map((e) => e.y).toList();
-    xs.sort();
-    ys.sort();
-    final minX = xs.first;
-    final maxX = xs.last;
-
-    final minY = ys.first;
-    final maxY = ys.last;
-    final yRange = (maxY - minY).abs();
-    final yMargin =
-    yRange == 0 ? 5.0 : (yRange * 0.2).clamp(4.0, 15.0); // 여유
-
-    final chartMinY = (minY - yMargin).floorToDouble();
-    final chartMaxY = (maxY + yMargin).ceilToDouble();
-
-    final df = DateFormat('HH:mm');
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return ListView(
+      padding: const EdgeInsets.all(20),
       children: [
-        Text(
-          '지난 밤 심박수 추이',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w700,
+        // 1. 메인 심박수 카드 (심장 아이콘 + 큰 숫자)
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+          ),
+          child: Column(
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("오늘 평균 심박수", style: TextStyle(fontSize: 14, color: Colors.grey, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(color: statusColor.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
+                        child: Text(statusText, style: TextStyle(fontSize: 12, color: statusColor, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(color: kHeartBgColor, shape: BoxShape.circle),
+                    child: const Icon(Icons.favorite_rounded, color: kHeartColor, size: 32),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
+                  Text("$avg", style: const TextStyle(fontSize: 56, fontWeight: FontWeight.w800, color: Colors.black87)),
+                  const SizedBox(width: 8),
+                  const Text("bpm", style: TextStyle(fontSize: 20, color: Colors.grey, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ],
           ),
         ),
+        const SizedBox(height: 24),
+
+        // 2. 미니 정보 그리드 (최저/최고)
+        Row(
+          children: [
+            _MiniInfoCard(title: "최저 심박수", value: "${vm.minHr?.round() ?? '-'}", unit: "bpm", icon: Icons.arrow_downward_rounded, color: Colors.blue),
+            const SizedBox(width: 12),
+            _MiniInfoCard(title: "최고 심박수", value: "${vm.maxHr?.round() ?? '-'}", unit: "bpm", icon: Icons.arrow_upward_rounded, color: Colors.red),
+          ],
+        ),
+        const SizedBox(height: 24),
+
+        // 3. 오늘 심박수 흐름 (그라데이션 라인 차트)
+        const Text("오늘의 흐름", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
-        Text(
-          '곡선이 부드럽게 유지되면 밤새 심장이 비교적 안정적으로 뛴다는 뜻이에요.',
-          style: Theme.of(context)
-              .textTheme
-              .bodyMedium
-              ?.copyWith(color: Colors.grey[700], height: 1.25),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          '특정 구간에서만 갑자기 치솟거나 떨어지는 패턴이 반복되면, 그 시간대의 생활 패턴을 한 번 살펴보세요.',
-          style: Theme.of(context)
-              .textTheme
-              .bodyMedium
-              ?.copyWith(color: Colors.grey[700], height: 1.25),
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          height: 220,
-          child: LineChart(
-            LineChartData(
-              minX: minX,
-              maxX: maxX,
-              minY: chartMinY,
-              maxY: chartMaxY,
-              borderData: FlBorderData(show: false),
-              gridData: FlGridData(
-                show: true,
-                drawVerticalLine: false,
-                horizontalInterval: 5,
-              ),
-              titlesData: FlTitlesData(
-                topTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: false)),
-                rightTitles: const AxisTitles(
-                    sideTitles: SideTitles(showTitles: false)),
-                bottomTitles: AxisTitles(
-                  sideTitles: SideTitles(
-                    showTitles: true,
-                    reservedSize: 24,
-                    getTitlesWidget: (value, meta) {
-                      final mid = (minX + maxX) / 2;
-                      final isEdge = (value == minX || value == maxX);
-                      final isMid = (value - mid).abs() < 1.0;
-                      if (!isEdge && !isMid) {
-                        return const SizedBox.shrink();
-                      }
-                      final t = start.add(Duration(minutes: value.round()));
-                      return SideTitleWidget(
-                        axisSide: meta.axisSide,
-                        child: Text(
-                          df.format(t),
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-                leftTitles: AxisTitles(
-                  sideTitles: SideTitles(
-                    showTitles: true,
-                    reservedSize: 36,
-                    getTitlesWidget: (value, meta) {
-                      if (value == meta.max || value == meta.min) {
-                        return const SizedBox.shrink();
-                      }
-                      return SideTitleWidget(
-                        axisSide: meta.axisSide,
-                        child: Text(
-                          value.toInt().toString(),
-                          style: const TextStyle(fontSize: 10),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ),
-              lineBarsData: [
-                LineChartBarData(
-                  spots: spots,
-                  isCurved: true,
-                  barWidth: 2.5,
-                  dotData: const FlDotData(show: false),
-                ),
-              ],
-              lineTouchData: LineTouchData(
-                enabled: true,
-                touchTooltipData: LineTouchTooltipData(
-                  tooltipRoundedRadius: 8,
-                  getTooltipItems: (touchedSpots) {
-                    if (touchedSpots.isEmpty) return [];
-                    return touchedSpots.map((ts) {
-                      final minutes = ts.x.round();
-                      final t = start.add(Duration(minutes: minutes));
-                      final bpm = ts.y;
-                      return LineTooltipItem(
-                        '${df.format(t)}\n',
-                        const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13,
-                        ),
-                        children: [
-                          TextSpan(
-                            text: '${bpm.toStringAsFixed(0)} bpm',
-                            style: const TextStyle(
-                              color: Colors.yellow,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      );
-                    }).toList();
-                  },
-                ),
-              ),
-            ),
-          ),
-        ),
+        const Text("그래프를 터치하면 상세 시간을 볼 수 있어요.", style: TextStyle(fontSize: 12, color: Colors.grey)),
+        const SizedBox(height: 16),
+        _InteractiveLineChart(vm: vm),
+        const SizedBox(height: 30),
+
+        // 4. 주간 차트
+        const Text("최근 7일 트렌드", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 16),
+        _WeeklyBarChart(vm: vm),
+        const SizedBox(height: 20),
       ],
     );
   }
 }
 
-// ---------------- 최근 7일 평균 심박수 막대 그래프 ----------------
-
-class _Last7DaysHrChart extends StatelessWidget {
-  final _HrVm vm;
-
-  const _Last7DaysHrChart({required this.vm});
+// ---------------- 위젯: 미니 정보 카드 ----------------
+class _MiniInfoCard extends StatelessWidget {
+  final String title; final String value; final String unit; final IconData icon; final Color color;
+  const _MiniInfoCard({required this.title, required this.value, required this.unit, required this.icon, required this.color});
 
   @override
   Widget build(BuildContext context) {
-    if (vm.last7Avg.isEmpty) {
-      return const Text('최근 7일 심박수 데이터가 없습니다.');
-    }
-
-    final entries = vm.last7Avg.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-
-    final groups = <BarChartGroupData>[];
-    final labels = <String>[];
-
-    final koreanDays = ['월', '화', '수', '목', '금', '토', '일'];
-
-    double maxBpm = 0;
-
-    for (int i = 0; i < entries.length; i++) {
-      final e = entries[i];
-      final bpm = e.value;
-      maxBpm = bpm > maxBpm ? bpm : maxBpm;
-
-      groups.add(
-        BarChartGroupData(
-          x: i,
-          barRods: [
-            BarChartRodData(
-              toY: bpm,
-              width: 16,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(4),
-                topRight: Radius.circular(4),
-              ),
-            ),
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10)]),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [Icon(icon, size: 18, color: color), const SizedBox(width: 6), Text(title, style: TextStyle(color: Colors.grey[600], fontSize: 13))]),
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                const SizedBox(width: 4),
+                Text(unit, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              ],
+            )
           ],
         ),
-      );
+      ),
+    );
+  }
+}
 
-      labels.add(koreanDays[e.key.weekday - 1]);
+// ---------------- 위젯: 인터랙티브 라인 차트 (그라데이션 포함) ----------------
+class _InteractiveLineChart extends StatelessWidget {
+  final _HrVm vm;
+  const _InteractiveLineChart({required this.vm});
+
+  @override
+  Widget build(BuildContext context) {
+    final spots = <FlSpot>[];
+    // 데이터가 너무 많으면 끊길 수 있으니 적절히 샘플링하거나 그대로 표시 (여기선 그대로)
+    final startTime = vm.periodStart;
+
+    for (var p in vm.samples) {
+      final minutes = p.time.difference(startTime).inMinutes.toDouble();
+      spots.add(FlSpot(minutes, p.bpm));
     }
 
-    final maxY = (maxBpm == 0 ? 100.0 : (maxBpm * 1.2)).ceilToDouble();
+    // Y축 범위 계산
+    double minY = 40, maxY = 150;
+    if (vm.minHr != null) minY = (vm.minHr! - 10).clamp(0, 200);
+    if (vm.maxHr != null) maxY = (vm.maxHr! + 10).clamp(50, 220);
 
-    return SizedBox(
+    return Container(
+      height: 250,
+      padding: const EdgeInsets.fromLTRB(16, 24, 24, 10),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(24), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10)]),
+      child: LineChart(
+        LineChartData(
+          minY: minY, maxY: maxY,
+          gridData: FlGridData(show: true, drawVerticalLine: false, horizontalInterval: 20, getDrawingHorizontalLine: (_) => FlLine(color: kGridLineColor, strokeWidth: 1)),
+          titlesData: FlTitlesData(
+            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 30, getTitlesWidget: (val, meta) {
+              if (val % 20 == 0) return Text("${val.toInt()}", style: const TextStyle(color: Colors.grey, fontSize: 10));
+              return const SizedBox();
+            })),
+            bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, interval: 60 * 6, getTitlesWidget: (val, meta) { // 6시간 간격
+              final d = startTime.add(Duration(minutes: val.toInt()));
+              return Padding(padding: const EdgeInsets.only(top: 8), child: Text(DateFormat('a h시', 'ko').format(d), style: const TextStyle(color: Colors.grey, fontSize: 10)));
+            })),
+          ),
+          borderData: FlBorderData(show: false),
+          lineBarsData: [
+            LineChartBarData(
+              spots: spots,
+              isCurved: true,
+              color: kHeartColor,
+              barWidth: 3,
+              isStrokeCapRound: true,
+              dotData: const FlDotData(show: false),
+              belowBarData: BarAreaData(show: true, gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [kHeartColor.withOpacity(0.3), kHeartColor.withOpacity(0.0)])),
+            ),
+          ],
+          lineTouchData: LineTouchData(
+            enabled: true,
+            touchTooltipData: LineTouchTooltipData(
+              tooltipRoundedRadius: 8,
+              getTooltipItems: (touchedSpots) {
+                return touchedSpots.map((spot) {
+                  final d = startTime.add(Duration(minutes: spot.x.toInt()));
+                  return LineTooltipItem(
+                    "${DateFormat('a h:mm', 'ko').format(d)}\n",
+                    const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                    children: [TextSpan(text: "${spot.y.toInt()} bpm", style: const TextStyle(color: Colors.yellowAccent, fontSize: 14, fontWeight: FontWeight.w800))],
+                  );
+                }).toList();
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------- 위젯: 주간 바 차트 ----------------
+class _WeeklyBarChart extends StatelessWidget {
+  final _HrVm vm;
+  const _WeeklyBarChart({required this.vm});
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = vm.last7Avg.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
+
+    // 최대값 계산
+    double maxVal = 0;
+    for (var e in entries) if (e.value > maxVal) maxVal = e.value;
+    final maxY = (maxVal < 100 ? 100.0 : maxVal * 1.2);
+
+    return Container(
       height: 220,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(24), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10)]),
       child: BarChart(
         BarChartData(
-          barGroups: groups,
           maxY: maxY,
-          borderData: FlBorderData(show: false),
-          gridData: FlGridData(
-            show: true,
-            drawVerticalLine: false,
-            horizontalInterval: 10,
-          ),
+          barGroups: entries.asMap().entries.map((e) {
+            final idx = e.key;
+            final isToday = idx == entries.length - 1;
+            return BarChartGroupData(
+              x: idx,
+              barRods: [BarChartRodData(toY: e.value.value, color: isToday ? kHeartColor : kHeartColor.withOpacity(0.3), width: 14, borderRadius: BorderRadius.circular(4))],
+            );
+          }).toList(),
           titlesData: FlTitlesData(
-            topTitles: const AxisTitles(
-                sideTitles: SideTitles(showTitles: false)),
-            rightTitles: const AxisTitles(
-                sideTitles: SideTitles(showTitles: false)),
-            bottomTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: true,
-                getTitlesWidget: (value, meta) {
-                  final i = value.toInt();
-                  if (i < 0 || i >= labels.length) {
-                    return const SizedBox.shrink();
-                  }
-                  return SideTitleWidget(
-                    axisSide: meta.axisSide,
-                    child: Text(
-                      labels[i],
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                  );
-                },
-              ),
-            ),
-            leftTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: true,
-                reservedSize: 40,
-                getTitlesWidget: (value, meta) {
-                  if (value == meta.max || value == meta.min) {
-                    return const SizedBox.shrink();
-                  }
-                  if (value % 10 != 0) {
-                    return const SizedBox.shrink();
-                  }
-                  return SideTitleWidget(
-                    axisSide: meta.axisSide,
-                    child: Text(
-                      '${value.toInt()}',
-                      style: const TextStyle(fontSize: 10),
-                    ),
-                  );
-                },
-              ),
-            ),
+            leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 30, getTitlesWidget: (val, meta) {
+              if (val > 0 && val % 50 == 0) return Text("${val.toInt()}", style: const TextStyle(color: Colors.grey, fontSize: 10));
+              return const SizedBox();
+            })),
+            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, getTitlesWidget: (val, meta) {
+              final idx = val.toInt();
+              if (idx >= 0 && idx < entries.length) return Padding(padding: const EdgeInsets.only(top: 8), child: Text(DateFormat('E', 'ko').format(entries[idx].key), style: const TextStyle(fontSize: 11, color: Colors.grey)));
+              return const SizedBox();
+            })),
           ),
+          gridData: FlGridData(show: true, drawVerticalLine: false, horizontalInterval: 50),
+          borderData: FlBorderData(show: false),
           barTouchData: BarTouchData(
             enabled: true,
             touchTooltipData: BarTouchTooltipData(
               tooltipRoundedRadius: 8,
               getTooltipItem: (group, groupIndex, rod, rodIndex) {
                 final idx = group.x.toInt();
-                if (idx < 0 || idx >= entries.length) return null;
                 final date = entries[idx].key;
-                final bpm = rod.toY;
                 return BarTooltipItem(
-                  '${date.month}/${date.day}\n',
-                  const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13,
-                  ),
-                  children: [
-                    TextSpan(
-                      text: bpm.toStringAsFixed(0),
-                      style: const TextStyle(
-                        color: Colors.yellow,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const TextSpan(
-                      text: ' bpm',
-                      style: TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                  ],
+                  '${DateFormat('MM/dd (E)', 'ko').format(date)}\n',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                  children: [TextSpan(text: "${rod.toY.toInt()} bpm", style: const TextStyle(color: Colors.yellowAccent, fontSize: 14, fontWeight: FontWeight.w800))],
                 );
               },
             ),
@@ -837,4 +422,19 @@ class _Last7DaysHrChart extends StatelessWidget {
       ),
     );
   }
+}
+
+// ---------------- ViewModel ----------------
+class _HrVm {
+  final DateTime periodStart; final DateTime periodEnd;
+  final double? avgHr; final double? minHr; final double? maxHr;
+  final List<_HrPoint> samples;
+  final Map<DateTime, double> last7Avg;
+
+  _HrVm({required this.periodStart, required this.periodEnd, required this.avgHr, required this.minHr, required this.maxHr, required this.samples, required this.last7Avg});
+}
+
+class _HrPoint {
+  final DateTime time; final double bpm;
+  _HrPoint({required this.time, required this.bpm});
 }

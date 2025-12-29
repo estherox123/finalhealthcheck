@@ -1,18 +1,24 @@
 // lib/pages/home_page.dart
+
 import 'dart:ui' show FontFeature;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:health/health.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 // 페이지 이동
 import 'package:finalhealthcheck/pages/sleep_detail_page.dart';
 import 'package:finalhealthcheck/pages/heart_rate_detail_page.dart';
 import 'package:finalhealthcheck/pages/steps_page.dart';
+import 'package:finalhealthcheck/pages/stress_recovery_page.dart';
+import 'package:finalhealthcheck/pages/health_summary_page.dart';
+import 'package:finalhealthcheck/pages/inbody_page.dart';
+import 'package:finalhealthcheck/pages/fecal_occult_blood_page.dart';
 
 // 데이터 및 로직
 import '../controllers/dashboard_controller.dart';
 import '../data/health_repository.dart';
 import '../widgets/permission_banner.dart';
-import '../data/health_data_service.dart';
 import '../widgets/top_settings_menu.dart';
 
 // IoT
@@ -20,6 +26,7 @@ import '../data/iot/device_control_controller.dart';
 import '../data/iot/iot_repository.dart';
 import '../data/iot/home_assistant_api.dart';
 import '../data/iot/home_assistant_options.dart';
+import '../data/recovery_score.dart' as rec;
 
 // ===== QuickMode & ModeService =====
 enum QuickMode { sleep, rest, daily }
@@ -35,7 +42,7 @@ class DummyModeService implements ModeService {
   }
 }
 
-// ------------------------------ 홈 대시보드 (시니어 친화적 디자인) ------------------------------
+// ------------------------------ 홈 대시보드 (에러 수정됨) ------------------------------
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -44,17 +51,39 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // 헬스 더미 데이터
-  int _sleepScoreDummy = 82;
-  int _sleepDeltaDummy = 1;
-  int _heartRateDummy = 68;
-  int _hrDeltaDummy = 0;
-  int _hrvDummy = 52;
-  int _hrvDeltaDummy = -1;
-  int _activityMinutesDummy = 45;
-  int _activityDeltaDummy = 0;
+  final Health _health = Health();
 
-  // 환경 더미 (센서 없는 값)
+  // ✅ 에러 원인 제거: MOVE_MINUTES 삭제
+  List<HealthDataType> get types => const [
+    HealthDataType.STEPS,
+    HealthDataType.SLEEP_SESSION,
+    HealthDataType.SLEEP_ASLEEP,
+    HealthDataType.HEART_RATE,
+    HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
+    HealthDataType.RESPIRATORY_RATE,
+    HealthDataType.WEIGHT,
+  ];
+
+  // 1. 헬스 데이터 변수
+  int _sleepScore = 0;
+  String _sleepStatusLabel = "분석 중";
+  Color _sleepStatusColor = Colors.grey;
+
+  int _heartRate = 0;
+  String _hrStatusLabel = "분석 중";
+  Color _hrStatusColor = Colors.grey;
+
+  int _hrv = 0;
+  String _hrvStatusLabel = "분석 중";
+  Color _hrvStatusColor = Colors.grey;
+
+  int _todayActivityMin = 0; // 활동 시간(분)
+  String _activityStatusLabel = "분석 중";
+  Color _activityStatusColor = Colors.grey;
+
+  double? _lastWeight;
+
+  // 2. 환경 더미
   int co2 = 820;
   double pm25 = 22.0;
 
@@ -66,21 +95,20 @@ class _HomePageState extends State<HomePage> {
 
   late final DashboardController _dc;
   late final DeviceControlController _iotDc;
-
   final ModeService _modeSvc = DummyModeService();
 
   QuickMode _mode = QuickMode.daily;
   bool _modeBusy = false;
+  bool _hasPermission = false;
 
   @override
   void initState() {
     super.initState();
-    // 1. Health Controller
+
     _dc = DashboardController(HealthRepositoryImpl());
     _dc.addListener(_onRefreshUI);
     _dc.init();
 
-    // 2. IoT Controller
     try {
       final iotApi = HomeAssistantApi(options: HomeAssistantOptions.fromEnv());
       _iotDc = DeviceControlController(IotRepository(iotApi));
@@ -89,10 +117,182 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       debugPrint('IoT Init Error: $e');
     }
+
+    _checkPermissionsAndLoad();
   }
 
   void _onRefreshUI() {
     if (mounted) setState(() {});
+  }
+
+  Future<void> _checkPermissionsAndLoad() async {
+    await [Permission.activityRecognition, Permission.location].request();
+    try {
+      bool authorized = await _health.requestAuthorization(types);
+      if (authorized) {
+        setState(() => _hasPermission = true);
+        await _loadSyncedHealthData();
+      }
+    } catch (e) {
+      debugPrint("Auth Error: $e");
+    }
+  }
+
+  // 헬퍼: 숫자 변환
+  double? _numVal(dynamic v) {
+    if (v is num) return v.toDouble();
+    if (v is NumericHealthValue) return v.numericValue.toDouble();
+    return null;
+  }
+
+  // 헬퍼: 수면 시간 계산
+  Future<Duration?> _sleepTotalInWindow(DateTime s, DateTime e) async {
+    try {
+      final pts = await _health.getHealthDataFromTypes(types: const [HealthDataType.SLEEP_ASLEEP, HealthDataType.SLEEP_SESSION], startTime: s, endTime: e);
+      int minSum = 0;
+      final sessions = pts.where((p) => p.type == HealthDataType.SLEEP_SESSION).toList();
+
+      // 세션 우선, 없으면 Asleep 사용
+      if (sessions.isNotEmpty) {
+        for (var p in sessions) minSum += p.dateTo.difference(p.dateFrom).inMinutes;
+      } else {
+        for (var p in pts) minSum += p.dateTo.difference(p.dateFrom).inMinutes;
+      }
+      return minSum > 0 ? Duration(minutes: minSum) : null;
+    } catch (_) { return null; }
+  }
+
+  // 헬퍼: 평균 계산
+  Future<double?> _avgOfType(DateTime s, DateTime e, HealthDataType t) async {
+    try {
+      final pts = await _health.getHealthDataFromTypes(types: [t], startTime: s, endTime: e);
+      if (pts.isEmpty) return null;
+      double sum = 0;
+      for (var p in pts) sum += (_numVal(p.value) ?? 0);
+      return sum / pts.length;
+    } catch (_) { return null; }
+  }
+
+  Future<void> _loadSyncedHealthData() async {
+    try {
+      final now = DateTime.now();
+      final today0 = DateTime(now.year, now.month, now.day);
+      final tomorrow0 = today0.add(const Duration(days: 1));
+
+      // 1. 수면 점수
+      final sleepStart = today0.subtract(const Duration(hours: 6));
+      final sleepEnd = today0.add(const Duration(hours: 12));
+      final sleepTotal = await _sleepTotalInWindow(sleepStart, sleepEnd);
+
+      final int sleepMin = sleepTotal?.inMinutes ?? 0;
+      final int sleepScore = (sleepMin / 480.0 * 100).clamp(0, 100).round();
+      final double sleepHours = sleepMin / 60.0;
+
+      String sleepLabel; Color sleepColor;
+      if (sleepHours >= 7) { sleepLabel = "충분함"; sleepColor = Colors.green; }
+      else if (sleepHours >= 5) { sleepLabel = "적당함"; sleepColor = Colors.blue; }
+      else { sleepLabel = "부족함"; sleepColor = Colors.orange; }
+
+
+      // 2. 활동 시간 (걸음 수 기반 추산)
+      // MOVE_MINUTES가 없을 때의 안전한 대안: 걸음 수 / 100 (대략적 분 환산)
+
+      // 오늘 걸음 수
+      final int stepsToday = await _health.getTotalStepsInInterval(today0, tomorrow0) ?? 0;
+
+      // 7일 평균 걸음 수
+      double stepSum = 0;
+      int stepCount = 0;
+      for (int i = 1; i <= 7; i++) {
+        final d = today0.subtract(Duration(days: i));
+        final s = await _health.getTotalStepsInInterval(d, d.add(const Duration(days: 1)));
+        if (s != null) {
+          stepSum += s;
+          stepCount++;
+        }
+      }
+      final int stepsAvg = stepCount > 0 ? (stepSum / stepCount).round() : 0;
+
+      // 분으로 변환 (100보 = 1분 가정)
+      final int activeMin = (stepsToday / 100).round();
+      final int activeAvg = (stepsAvg / 100).round();
+
+      String actLabel; Color actColor;
+      if (activeMin == 0 && activeAvg == 0) {
+        actLabel = "기록 없음"; actColor = Colors.grey;
+      } else if (activeMin >= activeAvg) {
+        actLabel = "평소보다 많음"; actColor = Colors.green;
+      } else {
+        actLabel = "평소보다 적음"; actColor = Colors.orange;
+      }
+
+
+      // 3. 심박수 & HRV
+      final hrData = await _health.getHealthDataFromTypes(
+          types: [HealthDataType.HEART_RATE, HealthDataType.HEART_RATE_VARIABILITY_RMSSD],
+          startTime: now.subtract(const Duration(hours: 24)), endTime: now
+      );
+
+      final hrList = hrData.where((e) => e.type == HealthDataType.HEART_RATE).toList();
+      hrList.sort((a, b) => b.dateTo.compareTo(a.dateTo));
+      int lastHr = 0;
+      if (hrList.isNotEmpty) lastHr = (_numVal(hrList.first.value) ?? 0).round();
+
+      String hrLabel; Color hrColor;
+      if (lastHr > 0) {
+        if (lastHr < 60) { hrLabel = "편안함"; hrColor = Colors.green; }
+        else if (lastHr <= 100) { hrLabel = "안정"; hrColor = Colors.blue; }
+        else { hrLabel = "높음"; hrColor = Colors.redAccent; }
+      } else {
+        hrLabel = "기록 없음"; hrColor = Colors.grey;
+      }
+
+      final hrvList = hrData.where((e) => e.type == HealthDataType.HEART_RATE_VARIABILITY_RMSSD).toList();
+      hrvList.sort((a, b) => b.dateTo.compareTo(a.dateTo));
+      int lastHrv = 0;
+      if (hrvList.isNotEmpty) lastHrv = (_numVal(hrvList.first.value) ?? 0).round();
+
+      String hrvLabel; Color hrvColor;
+      if (lastHrv > 0) {
+        if (lastHrv >= 40) { hrvLabel = "안정됨"; hrvColor = Colors.green; }
+        else { hrvLabel = "스트레스"; hrvColor = Colors.orange; }
+      } else {
+        hrvLabel = "기록 없음"; hrvColor = Colors.grey;
+      }
+
+      // 4. 체중 (최신)
+      final wData = await _health.getHealthDataFromTypes(types: [HealthDataType.WEIGHT], startTime: now.subtract(const Duration(days: 30)), endTime: now);
+      double? lastWeight;
+      if (wData.isNotEmpty) {
+        wData.sort((a, b) => b.dateTo.compareTo(a.dateTo));
+        lastWeight = _numVal(wData.first.value);
+      }
+
+      if (mounted) {
+        setState(() {
+          _sleepScore = sleepScore;
+          _sleepStatusLabel = sleepLabel;
+          _sleepStatusColor = sleepColor;
+
+          _todayActivityMin = activeMin;
+          _activityStatusLabel = actLabel;
+          _activityStatusColor = actColor;
+
+          _heartRate = lastHr;
+          _hrStatusLabel = hrLabel;
+          _hrStatusColor = hrColor;
+
+          _hrv = lastHrv;
+          _hrvStatusLabel = hrvLabel;
+          _hrvStatusColor = hrvColor;
+
+          _lastWeight = lastWeight;
+        });
+      }
+
+    } catch (e) {
+      debugPrint("Sync Load Error: $e");
+    }
   }
 
   @override
@@ -142,20 +342,8 @@ class _HomePageState extends State<HomePage> {
     final dateStr = DateFormat('M월 d일 EEEE', 'ko').format(now);
     final greet = _greeting(now);
 
-    // 데이터 준비
-    final snap = _dc.snapshot;
     final loading = _dc.status == DashboardStatus.loading;
 
-    final sleepScore = snap?.sleepScore ?? _sleepScoreDummy;
-    final sleepDelta = snap?.deltaVs7d['sleep'] ?? _sleepDeltaDummy;
-    final heartRate = snap?.heartRateAvg ?? _heartRateDummy;
-    final hrDelta = snap?.deltaVs7d['hr'] ?? _hrDeltaDummy;
-    final hrv = snap?.hrvRmssd ?? _hrvDummy;
-    final hrvDelta = snap?.deltaVs7d['hrv'] ?? _hrvDeltaDummy;
-    final activityMinutes = _activityMinutesDummy;
-    final activityDelta = _activityDeltaDummy;
-
-    // IoT 데이터
     final iotSnap = _iotDc.snapshot;
     double temp = iotSnap.aircon.currentTemperature;
     double humidity = iotSnap.aircon.currentHumidity;
@@ -163,11 +351,10 @@ class _HomePageState extends State<HomePage> {
     if (humidity == 0.0) humidity = 45.0;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF0F2F5), // 눈이 편한 연한 회색 배경
+      backgroundColor: const Color(0xFFF0F2F5),
       appBar: AppBar(
         backgroundColor: const Color(0xFFF0F2F5),
         elevation: 0,
-        // 앱바에는 간단한 타이틀만 남김
         title: const Text("건강 대시보드", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 20)),
         centerTitle: false,
         actions: const [TopSettingsMenu(), SizedBox(width: 8)],
@@ -177,21 +364,20 @@ class _HomePageState extends State<HomePage> {
       ),
       body: RefreshIndicator(
         onRefresh: () async {
-          await Future.wait([_dc.refresh(), _iotDc.init()]);
+          await Future.wait([_dc.refresh(), _iotDc.init(), _loadSyncedHealthData()]);
         },
         child: ListView(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           children: [
-            if (_dc.status == DashboardStatus.noPermission)
+            if (!_hasPermission)
               Padding(
                 padding: const EdgeInsets.only(bottom: 20),
                 child: PermissionBanner(
-                  types: kRecommendedTypes,
-                  onGranted: () async => _dc.retryAfterPermission(),
+                  types: types,
+                  onGranted: () async => _checkPermissionsAndLoad(),
                 ),
               ),
 
-            // 1. [수정] 인사말 & 날짜 (앱바에서 분리하여 크게 표시)
             const SizedBox(height: 10),
             Text(greet, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold, height: 1.3, color: Colors.black87)),
             const SizedBox(height: 8),
@@ -206,54 +392,56 @@ class _HomePageState extends State<HomePage> {
               physics: const NeverScrollableScrollPhysics(),
               mainAxisSpacing: 16,
               crossAxisSpacing: 16,
-              childAspectRatio: 1.1, // 카드를 가로로 더 길게
+              childAspectRatio: 1.1,
               children: [
                 _HealthCard(
                   title: '수면 점수',
-                  value: sleepScore.toString(),
+                  value: _sleepScore.toString(),
                   unit: '점',
                   icon: Icons.bedtime,
-                  color: _statusColorFor('sleep', sleepScore),
-                  statusLabel: _getStatusLabel('sleep', sleepScore),
-                  delta: sleepDelta,
+                  iconColor: Colors.indigoAccent, // 고정
+                  statusColor: _sleepStatusColor, // 가변
+                  statusLabel: _sleepStatusLabel,
                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SleepDetailPage())),
                 ),
                 _HealthCard(
                   title: '심박수',
-                  value: heartRate.toString(),
+                  value: _heartRate.toString(),
                   unit: 'bpm',
                   icon: Icons.favorite,
-                  color: _statusColorFor('hr', heartRate),
-                  statusLabel: _getStatusLabel('hr', heartRate),
-                  delta: hrDelta,
+                  iconColor: Colors.redAccent, // 고정
+                  statusColor: _hrStatusColor, // 가변
+                  statusLabel: _hrStatusLabel,
                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HeartRateDetailPage())),
                 ),
                 _HealthCard(
                   title: '심박변이도',
-                  value: hrv.toString(),
+                  value: _hrv.toString(),
                   unit: 'ms',
                   icon: Icons.multiline_chart,
-                  color: _statusColorFor('hrv', hrv),
-                  statusLabel: _getStatusLabel('hrv', hrv),
-                  delta: hrvDelta,
-                  onTap: () {},
+                  iconColor: Colors.deepPurpleAccent, // 고정
+                  statusColor: _hrvStatusColor, // 가변
+                  statusLabel: _hrvStatusLabel,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StressRecoveryPage())),
                 ),
                 _HealthCard(
                   title: '활동 시간',
-                  value: activityMinutes.toString(),
-                  unit: '분',
-                  icon: Icons.directions_walk,
-                  color: Colors.teal,
-                  statusLabel: '보통', // 더미
-                  delta: activityDelta,
+                  // 60분 미만이면 "45", 60분 이상이면 "1" (시간)
+                  value: _todayActivityMin < 60 ? "$_todayActivityMin" : "${_todayActivityMin ~/ 60}",
+                  // 60분 미만이면 "분", 60분 이상이면 "시간 30분"
+                  unit: _todayActivityMin < 60 ? "분" : "시간 ${_todayActivityMin % 60}분",
+                  icon: Icons.directions_run,
+                  iconColor: Colors.orange, // 고정
+                  statusColor: _activityStatusColor, // 가변
+                  statusLabel: _activityStatusLabel,
                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StepsPage())),
                 ),
               ],
             ),
             const SizedBox(height: 32),
 
-            // 3. 실내 환경 (글씨 키움)
-            _SectionHeader(title: '우리 집 날씨'),
+            // 3. 실내 환경
+            _SectionHeader(title: '우리 집 상태'),
             _EnvironmentBigCard(
               temp: temp,
               humidity: humidity,
@@ -283,10 +471,10 @@ class _HomePageState extends State<HomePage> {
             ),
             const SizedBox(height: 32),
 
-            // 5. 알림 (글씨 키움)
+            // 5. 알림
             _SectionHeader(title: '최근 알림', trailing: TextButton(onPressed: (){}, child: const Text("더보기", style: TextStyle(fontSize: 16)))),
             ..._lastNoti.map((n) => _NotificationCard(item: n)),
-            const SizedBox(height: 40),
+            const SizedBox(height: 30),
           ],
         ),
       ),
@@ -294,7 +482,7 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-// ------------------------------ 컴포넌트 (시니어 맞춤형) ------------------------------
+// ------------------------------ 컴포넌트 ------------------------------
 
 class _SectionHeader extends StatelessWidget {
   final String title;
@@ -308,7 +496,6 @@ class _SectionHeader extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // 섹션 제목 크게
           Text(title, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black87)),
           if (trailing != null) trailing!,
         ],
@@ -317,15 +504,14 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-// 1. 건강 카드 (원형 그래프 제거 -> 막대바 + 큰 글씨)
 class _HealthCard extends StatelessWidget {
   final String title;
   final String value;
   final String unit;
   final IconData icon;
-  final Color color;
-  final String statusLabel; // "좋음", "보통" 텍스트
-  final int delta;
+  final Color iconColor;
+  final Color statusColor;
+  final String statusLabel;
   final VoidCallback? onTap;
 
   const _HealthCard({
@@ -333,9 +519,9 @@ class _HealthCard extends StatelessWidget {
     required this.value,
     required this.unit,
     required this.icon,
-    required this.color,
+    required this.iconColor,
+    required this.statusColor,
     required this.statusLabel,
-    required this.delta,
     required this.onTap,
   });
 
@@ -357,16 +543,13 @@ class _HealthCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            // 상단: 아이콘 + 제목
             Row(
               children: [
-                Icon(icon, size: 20, color: color),
+                Icon(icon, size: 20, color: iconColor), // 고정 색상
                 const SizedBox(width: 8),
                 Flexible(child: Text(title, style: TextStyle(fontSize: 15, color: Colors.grey[700], fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
               ],
             ),
-
-            // 중단: 아주 큰 값
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -376,23 +559,20 @@ class _HealthCard extends StatelessWidget {
                   children: [
                     Text(value, style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w800, color: Colors.black87, height: 1.0)),
                     const SizedBox(width: 4),
-                    Text(unit, style: TextStyle(fontSize: 14, color: Colors.grey[600], fontWeight: FontWeight.w500)),
+                    Flexible(child: Text(unit, style: TextStyle(fontSize: 14, color: Colors.grey[600], fontWeight: FontWeight.w500))),
                   ],
                 ),
                 const SizedBox(height: 8),
-                // 하단: 막대 바 + 상태 텍스트 (직관적)
                 Row(
                   children: [
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
-                        color: color.withOpacity(0.15),
+                        color: statusColor.withOpacity(0.15), // 배경은 상태색
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: Text(statusLabel, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
+                      child: Text(statusLabel, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: statusColor)), // 글자는 상태색
                     ),
-                    const Spacer(),
-                    _DeltaIcon(delta: delta),
                   ],
                 )
               ],
@@ -404,24 +584,6 @@ class _HealthCard extends StatelessWidget {
   }
 }
 
-class _DeltaIcon extends StatelessWidget {
-  final int delta;
-  const _DeltaIcon({required this.delta});
-  @override
-  Widget build(BuildContext context) {
-    if (delta == 0) return const SizedBox.shrink();
-    final isUp = delta > 0;
-    // 건강 수치는 오르는게 좋은 경우도 있고 나쁜 경우도 있지만, 여기선 빨강/파랑으로 단순 등락 표시
-    // 시니어 배려: 색상보다는 화살표 모양으로 인지하도록
-    return Icon(
-      isUp ? Icons.arrow_upward_rounded : Icons.arrow_downward_rounded,
-      size: 20,
-      color: Colors.grey[400],
-    );
-  }
-}
-
-// 2. 실내 환경 카드 (글씨를 아주 크게, 2x2 배치)
 class _EnvironmentBigCard extends StatelessWidget {
   final double temp;
   final double humidity;
@@ -443,7 +605,6 @@ class _EnvironmentBigCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          // 상단: 온도와 습도 (가장 중요하므로 크게)
           Row(
             children: [
               Expanded(child: _EnvBigItem(icon: Icons.thermostat, label: "온도", value: temp.toStringAsFixed(1), unit: "°C", color: Colors.redAccent)),
@@ -454,7 +615,6 @@ class _EnvironmentBigCard extends StatelessWidget {
           const SizedBox(height: 24),
           const Divider(height: 1, thickness: 1, color: Color(0xFFF0F0F0)),
           const SizedBox(height: 24),
-          // 하단: 공기질 (조금 작게)
           Row(
             children: [
               Expanded(child: _EnvSmallItem(label: "이산화탄소", value: "$co2", unit: "ppm", isGood: co2 < 1000)),
@@ -523,7 +683,6 @@ class _EnvSmallItem extends StatelessWidget {
             Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black87)),
             Text(unit, style: TextStyle(fontSize: 12, color: Colors.grey[500])),
             const SizedBox(width: 6),
-            // 상태 점
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
@@ -539,7 +698,6 @@ class _EnvSmallItem extends StatelessWidget {
   }
 }
 
-// 3. 모드 버튼 (더 크고 누르기 쉽게)
 class _ModeToggleBtn extends StatelessWidget {
   final String label;
   final IconData icon;
@@ -555,14 +713,14 @@ class _ModeToggleBtn extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         margin: const EdgeInsets.symmetric(horizontal: 4),
-        padding: const EdgeInsets.symmetric(vertical: 16), // 세로 길이 늘림
+        padding: const EdgeInsets.symmetric(vertical: 16),
         decoration: BoxDecoration(
           color: isSelected ? Colors.indigoAccent : Colors.transparent,
           borderRadius: BorderRadius.circular(16),
         ),
         child: Column(
           children: [
-            Icon(icon, color: isSelected ? Colors.white : Colors.grey[400], size: 28), // 아이콘 크기 확대
+            Icon(icon, color: isSelected ? Colors.white : Colors.grey[400], size: 28),
             const SizedBox(height: 6),
             Text(label, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: isSelected ? Colors.white : Colors.grey[600])),
           ],
@@ -572,7 +730,6 @@ class _ModeToggleBtn extends StatelessWidget {
   }
 }
 
-// 4. 알림 카드 (글씨 확대)
 class _NotificationCard extends StatelessWidget {
   final _NotificationItem item;
   const _NotificationCard({required this.item});
@@ -624,21 +781,36 @@ class _NotificationItem {
   const _NotificationItem({required this.icon, required this.text, required this.time, required this.isAlert});
 }
 
+// 하단 메뉴 카드
+class _MenuCard extends StatelessWidget {
+  final String title; final IconData icon; final Color color; final VoidCallback onTap;
+  const _MenuCard({required this.title, required this.icon, required this.color, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 6)]),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle),
+              child: Icon(icon, color: color, size: 28),
+            ),
+            const SizedBox(height: 8),
+            Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.black87)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // 헬퍼 함수들
-Color _statusColorFor(String key, num value) {
-  if (key == 'sleep' && value >= 80) return Colors.indigoAccent;
-  if (key == 'hr' && (value >= 60 && value <= 100)) return Colors.redAccent;
-  if (key == 'hrv' && value >= 40) return Colors.green;
-  return Colors.orangeAccent;
-}
-
-String _getStatusLabel(String key, num value) {
-  if (key == 'sleep') return value >= 80 ? "충분함" : "부족함";
-  if (key == 'hr') return (value >= 60 && value <= 100) ? "정상" : "주의";
-  if (key == 'hrv') return value >= 40 ? "안정됨" : "스트레스";
-  return "보통";
-}
-
 String _greeting(DateTime now) {
   final h = now.hour;
   if (h < 6) return '편안한 밤\n보내고 계신가요? 🌙';

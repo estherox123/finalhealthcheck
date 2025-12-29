@@ -1,7 +1,3 @@
-// lib/pages/steps_page.dart
-/// 걸음 데이터 페이지. 오늘 걸음수 + 거리/활동시간 요약 + 7일간 걸음수 그래프
-/// - 오늘 카드 아래에 "목표 바" (목표 = 최근 7일 평균 걸음수)
-
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -20,75 +16,45 @@ class _StepsPageState extends HealthState<StepsPage> {
   @override
   List<HealthDataType> get types => const [HealthDataType.STEPS];
 
-  // yyyy-MM-dd → steps
+  // 데이터
   Map<String, int> dailySteps = {};
-  // 차트/툴팁에서 동일하게 쓰는 정렬 리스트
-  late List<MapEntry<String, int>> sortedDays = [];
-
+  List<MapEntry<String, int>> sortedDays = [];
   bool isLoadingData = false;
 
+  // 오늘 수치
   int todaysSteps = 0;
   double todaysDistanceKm = 0.0;
   int todaysActivityMinutes = 0;
+  int todaysCalories = 0;
+
+  // 비교 데이터
+  int yesterdaySteps = 0;
+  int avgSteps7 = 0; // 7일 평균
 
   List<BarChartGroupData> barGroups = [];
   List<String> dateLabelsForChart = [];
 
-  // Y축 라벨: "2천", "1.2만" 식으로 표기
-  String _stepsTickLabel(int v) {
-    if (v >= 10000) {
-      // 12345 → 1.2만 / 20000 → 2만
-      final man = v / 10000.0;
-      // 정수면 2만, 소수면 1.2만 이런 식
-      if (man == man.floorToDouble()) {
-        return '${man.toInt()}만';
-      } else {
-        return '${man.toStringAsFixed(1)}만';
-      }
-    } else if (v >= 1000) {
-      // 2000 → 2천
-      return '${v ~/ 1000}천';
-    } else if (v == 0) {
-      return '0';
-    } else {
-      // 100, 500 같은 애들
-      return '$v';
-    }
-  }
-
-
   @override
   void initState() {
     super.initState();
-    // 권한 초기화 완료 시점에 자동 로드
     authReady.then((ok) {
       if (!mounted) return;
       if (ok) _loadDailySteps();
     });
   }
 
-  // HealthValue → double 안전 추출 (v13 대응)
+  // ---------------- 데이터 계산 로직 ----------------
+
   double? _asDouble(dynamic v) {
     if (v == null) return null;
     if (v is num) return v.toDouble();
-    if (v is NumericHealthValue) {
-      final n = v.numericValue;
-      return n == null ? null : n.toDouble();
-    }
+    if (v is NumericHealthValue) return v.numericValue?.toDouble();
     return null;
   }
 
-  // 걸음수 → 대략 이동 거리(km) (평균 보폭 0.7m 가정)
-  double _estimateDistanceKm(int steps) {
-    const double strideMeters = 0.7;
-    return steps * strideMeters / 1000.0;
-  }
-
-  // 걸음수 → 대략 활동 시간(분) (보통 걸음 100걸음/분 정도 가정)
-  int _estimateActivityMinutes(int steps) {
-    if (steps <= 0) return 0;
-    return (steps / 100.0).round();
-  }
+  double _estimateDistanceKm(int steps) => steps * 0.7 / 1000.0;
+  int _estimateActivityMinutes(int steps) => steps <= 0 ? 0 : (steps / 100.0).round();
+  int _estimateCalories(int steps) => (steps * 0.04).round();
 
   Future<void> _loadDailySteps() async {
     if (isLoadingData || !authorized) return;
@@ -98,10 +64,6 @@ class _StepsPageState extends HealthState<StepsPage> {
       dailySteps.clear();
       barGroups.clear();
       dateLabelsForChart.clear();
-      todaysSteps = 0;
-      todaysDistanceKm = 0.0;
-      todaysActivityMinutes = 0;
-      sortedDays = [];
     });
 
     try {
@@ -109,73 +71,72 @@ class _StepsPageState extends HealthState<StepsPage> {
       final todayStart = DateTime(now.year, now.month, now.day);
       final tomorrowStart = todayStart.add(const Duration(days: 1));
 
-      // ---------------- 오늘 합계 ----------------
+      // 1. 오늘 걸음 수
       int today = 0;
-      final aggregated =
-      await health.getTotalStepsInInterval(todayStart, tomorrowStart);
+      final aggregated = await health.getTotalStepsInInterval(todayStart, tomorrowStart);
       if (aggregated != null) {
         today = aggregated;
       } else {
         final pts = await health.getHealthDataFromTypes(
           types: const [HealthDataType.STEPS],
           startTime: todayStart,
-          endTime: tomorrowStart, // end 미포함
+          endTime: tomorrowStart,
         );
         for (final p in pts) {
-          final d = _asDouble(p.value) ?? 0.0;
-          today += d.round();
+          today += (_asDouble(p.value) ?? 0.0).round();
         }
       }
 
-      // 오늘 거리/활동시간 추정
-      final double todayDistanceKm = _estimateDistanceKm(today);
-      final int todayActivityMin = _estimateActivityMinutes(today);
-
-      // ---------------- 지난 7일(오늘 포함) ----------------
+      // 2. 지난 7일 데이터
       final map = <String, int>{};
+      int total7Days = 0;
+      int count7Days = 0;
+      int yesterday = 0;
+
       for (int i = 6; i >= 0; i--) {
         final d = todayStart.subtract(Duration(days: i));
         final start = d;
-        final end = d.add(const Duration(days: 1)); // end 미포함
-        int steps = 0;
+        final end = d.add(const Duration(days: 1));
 
+        int steps = 0;
         if (i == 0) {
-          steps = today; // 위에서 구한 값 재사용
+          steps = today;
         } else {
           final agg = await health.getTotalStepsInInterval(start, end);
           if (agg != null) {
             steps = agg;
           } else {
-            final pts = await health.getHealthDataFromTypes(
-              types: const [HealthDataType.STEPS],
-              startTime: start,
-              endTime: end,
-            );
-            for (final p in pts) {
-              final dVal = _asDouble(p.value) ?? 0.0;
-              steps += dVal.round();
-            }
+            final pts = await health.getHealthDataFromTypes(types: const [HealthDataType.STEPS], startTime: start, endTime: end);
+            for (final p in pts) steps += (_asDouble(p.value) ?? 0.0).round();
           }
         }
+
         map[DateFormat('yyyy-MM-dd').format(start)] = steps;
+        total7Days += steps;
+        count7Days++;
+        if (i == 1) yesterday = steps;
       }
 
       if (!mounted) return;
       setState(() {
         todaysSteps = today;
-        todaysDistanceKm = todayDistanceKm;
-        todaysActivityMinutes = todayActivityMin;
+        todaysDistanceKm = _estimateDistanceKm(today);
+        todaysActivityMinutes = _estimateActivityMinutes(today);
+        todaysCalories = _estimateCalories(today);
+
+        yesterdaySteps = yesterday;
+        avgSteps7 = count7Days > 0 ? (total7Days / count7Days).round() : 1;
 
         final keys = map.keys.toList()..sort();
         dailySteps = {for (final k in keys) k: map[k]!};
-        // 차트/툴팁 공용 소스
         sortedDays = dailySteps.entries.toList();
-        _prepareBarChartData(); // barGroups & dateLabelsForChart
+
+        _prepareBarChartData();
         isLoadingData = false;
       });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => isLoadingData = false);
+    } catch (e) {
+      debugPrint("Steps Load Error: $e");
+      if (mounted) setState(() => isLoadingData = false);
     }
   }
 
@@ -186,324 +147,281 @@ class _StepsPageState extends HealthState<StepsPage> {
     for (int i = 0; i < sortedDays.length; i++) {
       final e = sortedDays[i];
       final steps = e.value.toDouble();
+      final isToday = i == sortedDays.length - 1;
+
       barGroups.add(
         BarChartGroupData(
           x: i,
           barRods: [
             BarChartRodData(
               toY: steps,
-              width: 16,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(4),
-                topRight: Radius.circular(4),
+              color: isToday ? const Color(0xFF4CAF50) : const Color(0xFFE0E0E0),
+              width: 14,
+              borderRadius: BorderRadius.circular(4),
+              backDrawRodData: BackgroundBarChartRodData(
+                show: true,
+                toY: (avgSteps7 * 1.5).toDouble(),
+                color: Colors.transparent,
               ),
             ),
           ],
         ),
       );
 
-      final dayOfWeek = DateTime.parse(e.key).weekday;
-      const koreanDays = ['월', '화', '수', '목', '금', '토', '일'];
-      dateLabelsForChart.add(koreanDays[dayOfWeek - 1]);
+      final date = DateTime.parse(e.key);
+      const days = ['월', '화', '수', '목', '금', '토', '일'];
+      dateLabelsForChart.add(days[date.weekday - 1]);
     }
   }
 
-  double _getChartMaxY() {
-    if (dailySteps.isEmpty) return 10000;
-    final maxVal =
-    dailySteps.values.fold<int>(0, (m, v) => v > m ? v : m).toDouble();
-    final scaled = (maxVal == 0 ? 5000 : (maxVal * 1.2));
-    return scaled.clamp(1000, 100000).ceilToDouble();
-  }
-
-  double _horizontalInterval(double maxY) {
-    final candidates = [1000.0, 2000.0, 5000.0, 10000.0, 20000.0];
-    for (final c in candidates) {
-      if (maxY / c <= 6) return c;
-    }
-    return maxY / 5.0;
-  }
+  // ---------------- UI 빌더 ----------------
 
   @override
   Widget build(BuildContext context) {
     final nf = NumberFormat('#,###');
-    final maxY = _getChartMaxY();
-    final interval = _horizontalInterval(maxY);
 
-    String _fmtDistanceKm(double km) {
-      if (km <= 0) return '0km';
-      return '${km.toStringAsFixed(1)}km';
-    }
+    // 목표 달성률 (최대 1.0)
+    double progress = avgSteps7 > 0 ? (todaysSteps / avgSteps7).clamp(0.0, 1.0) : 0.0;
 
-    // 🔹 최근 7일 평균 걸음수 (오늘 포함)
-    int avgSteps7 = 0;
-    if (dailySteps.isNotEmpty) {
-      final total = dailySteps.values.fold<int>(0, (s, v) => s + v);
-      avgSteps7 = (total / dailySteps.length).round();
-    }
-
-    // 진행률 (목표 = 최근 7일 평균)
-    double? progress;
-    if (avgSteps7 > 0) {
-      progress = (todaysSteps / avgSteps7).clamp(0.0, 1.0);
+    // 어제 대비 문구
+    final diff = todaysSteps - yesterdaySteps;
+    String insightText;
+    if (diff > 0) {
+      insightText = "어제보다 ${nf.format(diff)}걸음 더 걸으셨어요! 👏";
+    } else if (diff < 0) {
+      insightText = "어제보다 ${nf.format(diff.abs())}걸음 적네요. 조금 더 힘내세요! 💪";
+    } else {
+      insightText = "어제와 똑같이 걸으셨네요!";
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('걸음 & 활동 요약')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
+      backgroundColor: const Color(0xFFF5F7FA),
+      appBar: AppBar(
+        title: const Text('걸음 수', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
+        backgroundColor: const Color(0xFFF5F7FA),
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.black87),
+        actions: [
+          IconButton(
+            icon: isLoadingData
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.refresh),
+            onPressed: !isLoadingData && authorized ? _loadDailySteps : null,
+          )
+        ],
+      ),
+      body: !authorized
+          ? const Center(child: Text("권한이 필요합니다."))
+          : RefreshIndicator(
+        onRefresh: _loadDailySteps,
         child: ListView(
+          padding: const EdgeInsets.all(20),
           children: [
-            if (errorMsg != null) ...[
-              Text(
-                errorMsg!,
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.error,
-                ),
+            // 1. 메인 원형 게이지
+            _buildCircularIndicator(progress, nf),
+            const SizedBox(height: 30),
+
+            // 2. 상세 정보 그리드
+            _buildInfoGrid(),
+            const SizedBox(height: 20),
+
+            // 3. 인사이트 카드
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.blueAccent.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(16),
               ),
-              const SizedBox(height: 8),
-            ],
-            ElevatedButton.icon(
-              onPressed:
-              authorized && !isLoadingData ? _loadDailySteps : null,
-              icon: isLoadingData
-                  ? const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-                  : const Icon(Icons.refresh),
-              label: const Text('불러오기/새로고침'),
-            ),
-            const SizedBox(height: 16),
-
-            // 오늘 요약 카드 + 목표 바
-            if (authorized && !isLoadingData) ...[
-              Container(
-                width: double.infinity,
-                padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                decoration: BoxDecoration(
-                  color: Colors.teal.withOpacity(0.08),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.teal.withOpacity(0.3)),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(
-                      Icons.directions_walk,
-                      color: Colors.teal[700],
-                      size: 30,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '오늘 활동 요약',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '오늘: ${nf.format(todaysSteps)} 걸음',
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleLarge
-                                ?.copyWith(
-                              fontWeight: FontWeight.w800,
-                              fontSize: 22,
-                              color: Colors.teal[700],
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '대략 이동 거리: ${_fmtDistanceKm(todaysDistanceKm)}',
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodyMedium
-                                ?.copyWith(color: Colors.grey[800]),
-                          ),
-                          Text(
-                            '대략 활동 시간: ${todaysActivityMinutes}분',
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodyMedium
-                                ?.copyWith(color: Colors.grey[800]),
-                          ),
-                          const SizedBox(height: 10),
-
-                          // 🔹 목표 바 (목표 = 최근 7일 평균 걸음수)
-                          if (avgSteps7 > 0) ...[
-                            Text(
-                              '최근 7일 평균을 오늘의 목표로 잡았어요.',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(color: Colors.grey[700]),
-                            ),
-                            const SizedBox(height: 4),
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(999),
-                              child: LinearProgressIndicator(
-                                value: progress ?? 0.0,
-                                minHeight: 16,
-                                backgroundColor: Colors.grey[300],
-                                valueColor: const AlwaysStoppedAnimation<Color>(
-                                  Colors.teal,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '${nf.format(todaysSteps)} / ${nf.format(avgSteps7)} 걸음',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(
-                                color: Colors.grey[800],
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ] else ...[
-                            Text(
-                              '최근 7일 데이터가 부족해 목표를 계산하기 어렵습니다.',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(color: Colors.grey[600]),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
-
-            if (authorized && isLoadingData && barGroups.isEmpty)
-              const Center(child: CircularProgressIndicator()),
-
-            if (authorized && barGroups.isNotEmpty) ...[
-              Text(
-                '지난 7일 걸음 수',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                height: MediaQuery.of(context).size.height * 0.28,
-                child: BarChart(
-                  BarChartData(
-                    alignment: BarChartAlignment.spaceAround,
-                    barGroups: barGroups,
-                    maxY: maxY,
-                    titlesData: FlTitlesData(
-                      bottomTitles: AxisTitles(
-                        sideTitles: SideTitles(
-                          showTitles: true,
-                          getTitlesWidget: (v, m) {
-                            final i = v.toInt();
-                            if (i < 0 || i >= dateLabelsForChart.length) {
-                              return const SizedBox.shrink();
-                            }
-                            return SideTitleWidget(
-                              axisSide: m.axisSide,
-                              child: Text(
-                                dateLabelsForChart[i],
-                                style: const TextStyle(fontSize: 10),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                      leftTitles: AxisTitles(
-                        sideTitles: SideTitles(
-                          showTitles: true,
-                          reservedSize: 40,
-                          getTitlesWidget: (v, m) {
-                            if (v == m.max || v == m.min) {
-                              return const SizedBox.shrink();
-                            }
-                            if (v.toInt() % interval.toInt() != 0) {
-                              return const SizedBox.shrink();
-                            }
-                            return SideTitleWidget(
-                              axisSide: m.axisSide,
-                              child: Text(
-                                _stepsTickLabel(v.toInt()),
-                                style: const TextStyle(fontSize: 10),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                      topTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false),
-                      ),
-                      rightTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false),
-                      ),
-                    ),
-                    borderData: FlBorderData(show: false),
-                    gridData: FlGridData(
-                      show: true,
-                      drawVerticalLine: false,
-                      horizontalInterval: interval,
-                    ),
-                    barTouchData: BarTouchData(
-                      enabled: true,
-                      touchTooltipData: BarTouchTooltipData(
-                        tooltipBgColor: Colors.teal,
-                        tooltipRoundedRadius: 8,
-                        getTooltipItem: (group, groupIndex, rod, rodIndex) {
-                          final i = group.x.toInt();
-                          if (i < 0 || i >= sortedDays.length) return null;
-                          final entry = sortedDays[i];
-                          final date = DateTime.parse(entry.key);
-                          return BarTooltipItem(
-                            '${date.month}/${date.day}\n',
-                            const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                            ),
-                            children: <TextSpan>[
-                              TextSpan(
-                                text: '${rod.toY.toInt()}',
-                                style: const TextStyle(
-                                  color: Colors.yellow,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              const TextSpan(
-                                text: ' 걸음',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
-                          );
-                        },
-                      ),
+              child: Row(
+                children: [
+                  const Icon(Icons.tips_and_updates, color: Colors.blueAccent),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      insightText,
+                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.blueAccent),
                     ),
                   ),
-                ),
+                ],
               ),
-              const SizedBox(height: 8),
-            ],
+            ),
+            const SizedBox(height: 30),
+
+            // 4. 주간 차트 (개선됨 ✅)
+            const Text("최근 7일 트렌드", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            _buildWeeklyChart(),
+            const SizedBox(height: 20),
           ],
+        ),
+      ),
+    );
+  }
+
+  // 원형 프로그레스 바
+  Widget _buildCircularIndicator(double progress, NumberFormat nf) {
+    return Center(
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          SizedBox(
+            width: 220, height: 220,
+            child: CircularProgressIndicator(value: 1.0, strokeWidth: 18, color: Colors.grey[200], strokeCap: StrokeCap.round),
+          ),
+          SizedBox(
+            width: 220, height: 220,
+            child: CircularProgressIndicator(value: progress, strokeWidth: 18, color: const Color(0xFF4CAF50), backgroundColor: Colors.transparent, strokeCap: StrokeCap.round),
+          ),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('오늘 걸음 수', style: TextStyle(fontSize: 14, color: Colors.grey)),
+              const SizedBox(height: 4),
+              Text(nf.format(todaysSteps), style: const TextStyle(fontSize: 40, fontWeight: FontWeight.w900, color: Colors.black87)),
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(12)),
+                child: Text('목표 ${nf.format(avgSteps7)}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
+              ),
+            ],
+          )
+        ],
+      ),
+    );
+  }
+
+  // 정보 그리드
+  Widget _buildInfoGrid() {
+    return Row(
+      children: [
+        _buildInfoCard(icon: Icons.local_fire_department_rounded, color: Colors.orange, label: '칼로리', value: '$todaysCalories', unit: 'kcal'),
+        const SizedBox(width: 12),
+        _buildInfoCard(icon: Icons.place_outlined, color: Colors.blue, label: '거리', value: todaysDistanceKm.toStringAsFixed(1), unit: 'km'),
+        const SizedBox(width: 12),
+        _buildInfoCard(icon: Icons.timer_outlined, color: Colors.purple, label: '활동 시간', value: '$todaysActivityMinutes', unit: '분'),
+      ],
+    );
+  }
+
+  Widget _buildInfoCard({required IconData icon, required Color color, required String label, required String value, required String unit}) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 8),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))]),
+        child: Column(
+          children: [
+            Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle), child: Icon(icon, color: color, size: 24)),
+            const SizedBox(height: 12),
+            Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            const SizedBox(height: 4),
+            RichText(text: TextSpan(children: [TextSpan(text: value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87)), TextSpan(text: unit, style: const TextStyle(fontSize: 12, color: Colors.grey))])),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ [업그레이드] 주간 차트 (Y축 라벨 + 툴팁 개선)
+  Widget _buildWeeklyChart() {
+    if (barGroups.isEmpty) return const SizedBox(height: 200, child: Center(child: Text("데이터 없음")));
+
+    // Y축 최대값 계산
+    double maxSteps = 0;
+    for (var e in sortedDays) {
+      if (e.value > maxSteps) maxSteps = e.value.toDouble();
+    }
+    final maxY = (maxSteps < 5000 ? 5000.0 : maxSteps * 1.2);
+
+    return Container(
+      height: 250,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+      ),
+      child: BarChart(
+        BarChartData(
+          alignment: BarChartAlignment.spaceAround,
+          maxY: maxY,
+          barTouchData: BarTouchData(
+            enabled: true,
+            touchTooltipData: BarTouchTooltipData(
+              tooltipRoundedRadius: 8,
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final idx = group.x.toInt();
+                final dateKey = sortedDays[idx].key;
+                final date = DateTime.parse(dateKey);
+                final steps = rod.toY.toInt();
+
+                return BarTooltipItem(
+                  '${DateFormat('MM/dd (E)', 'ko').format(date)}\n',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                  children: [
+                    TextSpan(
+                      text: NumberFormat('#,###').format(steps),
+                      style: const TextStyle(color: Colors.yellowAccent, fontSize: 14, fontWeight: FontWeight.w800),
+                    ),
+                    const TextSpan(text: ' 걸음', style: TextStyle(color: Colors.white, fontSize: 12)),
+                  ],
+                );
+              },
+            ),
+          ),
+          titlesData: FlTitlesData(
+            show: true,
+            // ✅ 왼쪽 Y축 (걸음 수) 표시
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 40,
+                getTitlesWidget: (value, meta) {
+                  if (value == 0) return const SizedBox();
+                  // 10000 -> 10k, 5000 -> 5k 처럼 줄여서 표시하거나 그대로 표시
+                  // 여기선 공간상 천 단위로 표시
+                  if (value % 5000 == 0) {
+                    return Text('${(value/1000).toInt()}k', style: const TextStyle(color: Colors.grey, fontSize: 10));
+                  }
+                  return const SizedBox();
+                },
+              ),
+            ),
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  if (value.toInt() >= 0 && value.toInt() < dateLabelsForChart.length) {
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 8.0),
+                      child: Text(
+                        dateLabelsForChart[value.toInt()],
+                        style: TextStyle(
+                          color: value.toInt() == dateLabelsForChart.length - 1
+                              ? const Color(0xFF4CAF50)
+                              : Colors.grey,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                      ),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
+                reservedSize: 30,
+              ),
+            ),
+            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          ),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            horizontalInterval: 5000, // 5000보 단위 가로선
+            getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey[100], strokeWidth: 1),
+          ),
+          borderData: FlBorderData(show: false),
+          barGroups: barGroups,
         ),
       ),
     );
