@@ -1,3 +1,5 @@
+// lib/data/iot/models.dart
+
 import 'package:flutter/foundation.dart';
 
 /// 에어컨 모드
@@ -24,7 +26,7 @@ class AirconState {
   final AcMode mode;
   final int timerHours;
   final AcFanSpeed fanSpeed;
-  final bool isSwing;           // (UI에서는 숨기지만, API 호환성을 위해 유지)
+  final bool isSwing;
 
   const AirconState({
     required this.isOn,
@@ -37,7 +39,6 @@ class AirconState {
     this.isSwing = false,
   });
 
-  // 초기 상태
   static const initial = AirconState(
     isOn: false,
     temperature: 24,
@@ -130,11 +131,28 @@ class IotSnapshot {
   final BlindsStatus blinds;
   final LightsState lights;
 
+  // 인바디 데이터 필드 (7종)
+  final double inbodyWeight; // 체중 (kg)
+  final double inbodyMuscle; // 골격근량 (kg)
+  final double inbodyFat;    // 체지방량 (kg)
+  final double inbodyBMI;    // BMI (kg/m²)
+  final double inbodyPBF;    // 체지방률 (%)
+  final double inbodyBMR;    // 기초대사량 (kcal)
+  final double inbodyVFL;    // 내장지방레벨 (Lv)
+
   const IotSnapshot({
     required this.aircon,
     required this.hrv,
     required this.blinds,
     required this.lights,
+    // 생성자 초기화
+    this.inbodyWeight = 0.0,
+    this.inbodyMuscle = 0.0,
+    this.inbodyFat = 0.0,
+    this.inbodyBMI = 0.0,
+    this.inbodyPBF = 0.0,
+    this.inbodyBMR = 0.0,
+    this.inbodyVFL = 0.0,
   });
 
   IotSnapshot copyWith({
@@ -142,12 +160,28 @@ class IotSnapshot {
     HrvState? hrv,
     BlindsStatus? blinds,
     LightsState? lights,
+    // copyWith 파라미터
+    double? inbodyWeight,
+    double? inbodyMuscle,
+    double? inbodyFat,
+    double? inbodyBMI,
+    double? inbodyPBF,
+    double? inbodyBMR,
+    double? inbodyVFL,
   }) =>
       IotSnapshot(
         aircon: aircon ?? this.aircon,
         hrv: hrv ?? this.hrv,
         blinds: blinds ?? this.blinds,
         lights: lights ?? this.lights,
+        // 값 할당
+        inbodyWeight: inbodyWeight ?? this.inbodyWeight,
+        inbodyMuscle: inbodyMuscle ?? this.inbodyMuscle,
+        inbodyFat: inbodyFat ?? this.inbodyFat,
+        inbodyBMI: inbodyBMI ?? this.inbodyBMI,
+        inbodyPBF: inbodyPBF ?? this.inbodyPBF,
+        inbodyBMR: inbodyBMR ?? this.inbodyBMR,
+        inbodyVFL: inbodyVFL ?? this.inbodyVFL,
       );
 
   static IotSnapshot initial() => IotSnapshot(
@@ -159,5 +193,6 @@ class IotSnapshot {
       '침실': LightRoomState.off,
       '주방': LightRoomState.off,
     },
+    // 숫자는 기본 0.0으로 자동 초기화
   );
 }

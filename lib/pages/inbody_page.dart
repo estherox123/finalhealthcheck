@@ -1,161 +1,195 @@
-// lib/pages/inbody_page.dart
-
 import 'package:flutter/material.dart';
-import 'package:health/health.dart';
 import 'package:intl/intl.dart';
+import '../data/iot/device_control_controller.dart';
+import '../data/iot/home_assistant_api.dart';
+import '../data/iot/home_assistant_options.dart';
+import '../data/iot/iot_repository.dart';
 
-import 'base_health_page.dart'; // 기존 베이스 페이지 상속
-
-class InBodyPage extends HealthStatefulPage {
+class InBodyPage extends StatefulWidget {
   const InBodyPage({super.key});
 
   @override
   State<InBodyPage> createState() => _InBodyPageState();
 }
 
-class _InBodyPageState extends HealthState<InBodyPage> {
-  // 헬스 커넥트에서 가져올 데이터 타입 정의
-  @override
-  List<HealthDataType> get types => const [
-    HealthDataType.WEIGHT,
-    HealthDataType.BODY_FAT_PERCENTAGE,
-    HealthDataType.BASAL_ENERGY_BURNED, // 기초대사량
-  ];
-
-  // 데이터 저장 변수
-  double? _weight;
-  double? _bodyFat; // %
-  double? _bmr; // kcal
-  DateTime? _lastDate; // 마지막 측정일
-  bool _loading = true;
+class _InBodyPageState extends State<InBodyPage> {
+  late final DeviceControlController _controller;
+  bool _isInit = false;
 
   @override
   void initState() {
     super.initState();
-    // 권한 확인 후 데이터 로드
-    authReady.then((_) => _loadData());
+    _initController();
   }
 
-  Future<void> _loadData() async {
-    setState(() => _loading = true);
+  void _initController() {
     try {
-      final now = DateTime.now();
-      // 최근 30일 데이터 중 가장 최신 값을 가져옴
-      final start = now.subtract(const Duration(days: 30));
-      final end = now;
+      // 1. HA 연결 초기화
+      final api = HomeAssistantApi(options: HomeAssistantOptions.fromEnv());
+      final repo = IotRepository(api);
+      _controller = DeviceControlController(repo);
 
-      // 1. 체중
-      final weightData = await health.getHealthDataFromTypes(
-          types: [HealthDataType.WEIGHT], startTime: start, endTime: end);
-
-      // 2. 체지방률
-      final fatData = await health.getHealthDataFromTypes(
-          types: [HealthDataType.BODY_FAT_PERCENTAGE], startTime: start, endTime: end);
-
-      // 3. 기초대사량
-      final bmrData = await health.getHealthDataFromTypes(
-          types: [HealthDataType.BASAL_ENERGY_BURNED], startTime: start, endTime: end);
-
-      // 가장 최신 데이터 추출 (정렬 후 첫 번째)
-      // *참고: Health 패키지는 보통 최신순으로 주지 않을 수 있어 정렬 필요
-      weightData.sort((a, b) => b.dateTo.compareTo(a.dateTo));
-      fatData.sort((a, b) => b.dateTo.compareTo(a.dateTo));
-      bmrData.sort((a, b) => b.dateTo.compareTo(a.dateTo));
-
-      setState(() {
-        if (weightData.isNotEmpty) {
-          _weight = _numVal(weightData.first.value);
-          _lastDate = weightData.first.dateTo; // 기준 날짜는 체중으로
-        }
-        if (fatData.isNotEmpty) _bodyFat = _numVal(fatData.first.value);
-        if (bmrData.isNotEmpty) _bmr = _numVal(bmrData.first.value);
-      });
+      // 2. 리스너 등록 및 데이터 로드
+      _controller.addListener(_onUpdate);
+      _controller.init();
+      setState(() => _isInit = true);
     } catch (e) {
-      debugPrint("InBody Data Load Error: $e");
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      debugPrint("InBody Controller Init Error: $e");
     }
   }
 
-  double? _numVal(dynamic v) {
-    if (v is NumericHealthValue) return v.numericValue.toDouble();
-    return null;
+  void _onUpdate() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    if (_isInit) _controller.removeListener(_onUpdate);
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final dateStr = _lastDate != null
-        ? DateFormat('M월 d일 (E) 측정', 'ko').format(_lastDate!)
+    if (!_isInit) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+
+    final snap = _controller.snapshot;
+    final isLoading = _controller.status == IotStatus.loading;
+
+    // 데이터가 0보다 크면 데이터가 있는 것으로 간주
+    final hasData = snap.inbodyWeight > 0;
+
+    // 타임스탬프는 현재 갱신 시점 기준 (HA에 저장된 날짜를 가져오려면 모델에 String 필드 추가 필요)
+    final dateStr = hasData
+        ? DateFormat('M월 d일 (E) 확인', 'ko').format(DateTime.now())
         : '최근 기록 없음';
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FA), // 통일된 배경색
+      backgroundColor: const Color(0xFFF5F7FA), // 기존 배경색 유지
       appBar: AppBar(
-        title: const Text('체성분 분석', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('체성분 상세 분석', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
         backgroundColor: const Color(0xFFF5F7FA),
         elevation: 0,
-        foregroundColor: Colors.black87,
+        centerTitle: true,
+        leading: const BackButton(color: Colors.black87),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadData,
+            icon: const Icon(Icons.refresh, color: Colors.black87),
+            onPressed: () => _controller.init(),
             tooltip: '새로고침',
           )
         ],
       ),
-      body: _loading
+      body: isLoading
           ? const Center(child: CircularProgressIndicator())
+          : !hasData
+          ? _buildEmptyState()
           : RefreshIndicator(
-        onRefresh: _loadData,
-        child: ListView(
+        onRefresh: () async => await _controller.init(),
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(20),
-          children: [
-            // 1. 상단 날짜 안내
-            Center(
-              child: Text(
-                dateStr,
-                style: TextStyle(fontSize: 14, color: Colors.grey[600], fontWeight: FontWeight.w500),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 1. 날짜 안내
+              Center(
+                child: Text(
+                  dateStr,
+                  style: TextStyle(fontSize: 14, color: Colors.grey[600], fontWeight: FontWeight.w500),
+                ),
               ),
-            ),
-            const SizedBox(height: 20),
+              const SizedBox(height: 20),
 
-            // 2. 체중 카드 (가장 크게)
-            _WeightBigCard(weight: _weight),
-            const SizedBox(height: 20),
+              // 2. 메인 체중 카드 (기존 디자인 유지)
+              _WeightBigCard(weight: snap.inbodyWeight),
+              const SizedBox(height: 24),
 
-            // 3. 체지방률 (게이지 바)
-            _SectionTitle('체지방률'),
-            _BodyFatCard(percentage: _bodyFat),
-            const SizedBox(height: 20),
-
-            // 4. 기초대사량
-            _SectionTitle('기초대사량'),
-            _BmrCard(bmr: _bmr),
-
-            const SizedBox(height: 40),
-
-            // 안내 문구
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.grey[200],
-                borderRadius: BorderRadius.circular(12),
+              // 3. [NEW] 신체 구성 (골격근 vs 체지방량 비교)
+              const _SectionTitle('신체 구성'),
+              _BodyCompCard(
+                muscle: snap.inbodyMuscle,
+                fat: snap.inbodyFat,
               ),
-              child: Row(
+              const SizedBox(height: 24),
+
+              // 4. 비만 분석 (체지방률 & BMI)
+              const _SectionTitle('비만 분석'),
+              _ObesityCard(
+                pbf: snap.inbodyPBF,
+                bmi: snap.inbodyBMI,
+              ),
+              const SizedBox(height: 24),
+
+              // 5. 상세 지표 (기초대사량 & 내장지방)
+              const _SectionTitle('상세 지표'),
+              Row(
                 children: [
-                  Icon(Icons.info_outline, size: 20, color: Colors.grey[600]),
-                  const SizedBox(width: 10),
                   Expanded(
-                    child: Text(
-                      "InBody 앱이나 삼성 헬스에서 측정한 데이터가 헬스 커넥트를 통해 자동으로 연동됩니다.",
-                      style: TextStyle(fontSize: 13, color: Colors.grey[700], height: 1.4),
+                    child: _DetailSmallCard(
+                      label: "기초대사량",
+                      value: snap.inbodyBMR.toInt().toString(),
+                      unit: "kcal",
+                      icon: Icons.local_fire_department,
+                      color: Colors.orange,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _DetailSmallCard(
+                      label: "내장지방",
+                      value: "Lv.${snap.inbodyVFL.toInt()}",
+                      unit: "",
+                      icon: Icons.layers,
+                      color: Colors.deepPurple,
                     ),
                   ),
                 ],
               ),
-            )
-          ],
+
+              const SizedBox(height: 40),
+
+              // 안내 문구
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.grey[200],
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.cloud_sync, size: 20, color: Colors.grey[600]),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        "Home Assistant를 통해 InBody H30NWi 데이터를 실시간으로 동기화합니다.",
+                        style: TextStyle(fontSize: 13, color: Colors.grey[700], height: 1.4),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            ],
+          ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.monitor_weight_outlined, size: 80, color: Colors.grey[300]),
+          const SizedBox(height: 16),
+          Text("데이터가 없습니다.", style: TextStyle(fontSize: 18, color: Colors.grey[600], fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          const Text("인바디 측정 후 새로고침 해주세요.", style: TextStyle(color: Colors.grey)),
+          const SizedBox(height: 20),
+          ElevatedButton(
+            onPressed: () => _controller.init(),
+            child: const Text("새로고침"),
+          )
+        ],
       ),
     );
   }
@@ -173,9 +207,9 @@ class _SectionTitle extends StatelessWidget {
   );
 }
 
-// 1. 대형 체중 카드
+// 1. 대형 체중 카드 (기존 디자인 활용)
 class _WeightBigCard extends StatelessWidget {
-  final double? weight;
+  final double weight;
   const _WeightBigCard({required this.weight});
 
   @override
@@ -197,7 +231,7 @@ class _WeightBigCard extends StatelessWidget {
             textBaseline: TextBaseline.alphabetic,
             children: [
               Text(
-                  weight != null ? weight!.toStringAsFixed(1) : '-',
+                  weight.toStringAsFixed(1),
                   style: const TextStyle(fontSize: 56, fontWeight: FontWeight.w800, color: Colors.black87, height: 1.0)
               ),
               const SizedBox(width: 8),
@@ -210,37 +244,82 @@ class _WeightBigCard extends StatelessWidget {
   }
 }
 
-// 2. 체지방률 카드 (게이지 바 포함)
-class _BodyFatCard extends StatelessWidget {
-  final double? percentage;
-  const _BodyFatCard({required this.percentage});
+// 2. 신체 구성 카드 (골격근량 vs 체지방량)
+class _BodyCompCard extends StatelessWidget {
+  final double muscle;
+  final double fat;
 
-  // 상태 판별 (남녀 평균치를 고려해 대략적인 기준 설정 - 어르신용이라 단순화)
-  // 남자 표준: 10~20%, 여자 표준: 18~28% -> 평균적으로 20% 내외를 표준, 30% 이상을 비만으로 단순화
-  String _getStatus(double v) {
-    if (v < 18) return '표준 이하'; // 근육형 or 마름
-    if (v <= 28) return '표준';
-    if (v <= 35) return '경도 비만';
-    return '비만';
-  }
-
-  Color _getColor(double v) {
-    if (v < 18) return Colors.blueAccent;
-    if (v <= 28) return Colors.green; // 표준
-    if (v <= 35) return Colors.orange; // 주의
-    return Colors.redAccent; // 위험
-  }
+  const _BodyCompCard({required this.muscle, required this.fat});
 
   @override
   Widget build(BuildContext context) {
-    final hasData = percentage != null;
-    final val = percentage ?? 0.0;
-    final status = hasData ? _getStatus(val) : '-';
-    final color = hasData ? _getColor(val) : Colors.grey;
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+      ),
+      child: Column(
+        children: [
+          _buildBar("골격근량", muscle, 50.0, Colors.indigoAccent, Icons.fitness_center), // Max 50kg 기준
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Divider(height: 1),
+          ),
+          _buildBar("체지방량", fat, 50.0, Colors.orangeAccent, Icons.opacity),
+        ],
+      ),
+    );
+  }
 
-    // 게이지 비율 (최대 50%로 가정하고 비율 계산)
-    final progress = (val / 50.0).clamp(0.0, 1.0);
+  Widget _buildBar(String label, double val, double max, Color color, IconData icon) {
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle),
+          child: Icon(icon, color: color, size: 20),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                  Text("${val.toStringAsFixed(1)} kg", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                ],
+              ),
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: (val / max).clamp(0.0, 1.0),
+                  minHeight: 8,
+                  backgroundColor: Colors.grey[100],
+                  valueColor: AlwaysStoppedAnimation<Color>(color),
+                ),
+              ),
+            ],
+          ),
+        )
+      ],
+    );
+  }
+}
 
+// 3. 비만 분석 카드 (체지방률 + BMI)
+class _ObesityCard extends StatelessWidget {
+  final double pbf; // 체지방률
+  final double bmi; // BMI
+
+  const _ObesityCard({required this.pbf, required this.bmi});
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
@@ -250,104 +329,107 @@ class _BodyFatCard extends StatelessWidget {
       ),
       child: Column(
         children: [
+          // 체지방률
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(color: Colors.indigo.withOpacity(0.1), shape: BoxShape.circle),
-                    child: const Icon(Icons.water_drop_rounded, color: Colors.indigo, size: 20),
-                  ),
-                  const SizedBox(width: 12),
-                  const Text("체지방률", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                ],
-              ),
-              if (hasData)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-                  child: Text(status, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
-                ),
+              const Text("체지방률(PBF)", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54)),
+              Text("${pbf.toStringAsFixed(1)} %", style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             ],
-          ),
-          const SizedBox(height: 20),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(hasData ? val.toStringAsFixed(1) : '-', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w800)),
-              const Padding(
-                padding: EdgeInsets.only(bottom: 6, left: 4),
-                child: Text('%', style: TextStyle(fontSize: 16, color: Colors.grey, fontWeight: FontWeight.bold)),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          // 커스텀 게이지 바
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: LinearProgressIndicator(
-              value: progress,
-              minHeight: 12,
-              backgroundColor: Colors.grey[100],
-              color: color,
-            ),
           ),
           const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: LinearProgressIndicator(
+              value: (pbf / 50).clamp(0.0, 1.0),
+              minHeight: 10,
+              backgroundColor: Colors.grey[100],
+              color: _getPbfColor(pbf),
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // BMI
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: const [
-              Text("0%", style: TextStyle(fontSize: 12, color: Colors.grey)),
-              Text("25%", style: TextStyle(fontSize: 12, color: Colors.grey)), // 중간값 가이드
-              Text("50%+", style: TextStyle(fontSize: 12, color: Colors.grey)),
+            children: [
+              const Text("체질량지수(BMI)", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54)),
+              Text("${bmi.toStringAsFixed(1)} kg/m²", style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             ],
-          )
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: LinearProgressIndicator(
+              value: (bmi / 40).clamp(0.0, 1.0),
+              minHeight: 10,
+              backgroundColor: Colors.grey[100],
+              color: _getBmiColor(bmi),
+            ),
+          ),
         ],
       ),
     );
   }
+
+  Color _getPbfColor(double v) {
+    if (v < 10) return Colors.blue;
+    if (v < 20) return Colors.green;
+    if (v < 28) return Colors.orange;
+    return Colors.red;
+  }
+
+  Color _getBmiColor(double v) {
+    if (v < 18.5) return Colors.blue;
+    if (v < 23) return Colors.green;
+    if (v < 25) return Colors.orange;
+    return Colors.red;
+  }
 }
 
-// 3. 기초대사량 카드
-class _BmrCard extends StatelessWidget {
-  final double? bmr;
-  const _BmrCard({required this.bmr});
+// 4. 소형 정보 카드 (Grid용)
+class _DetailSmallCard extends StatelessWidget {
+  final String label;
+  final String value;
+  final String unit;
+  final IconData icon;
+  final Color color;
+
+  const _DetailSmallCard({
+    required this.label,
+    required this.value,
+    required this.unit,
+    required this.icon,
+    required this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 8)],
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(color: Colors.orange.withOpacity(0.1), shape: BoxShape.circle),
-            child: const Icon(Icons.local_fire_department_rounded, color: Colors.orange, size: 28),
+          Row(
+            children: [
+              Icon(icon, size: 18, color: color),
+              const SizedBox(width: 8),
+              Text(label, style: const TextStyle(fontSize: 13, color: Colors.grey, fontWeight: FontWeight.bold)),
+            ],
           ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text("기초대사량", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 4),
-                const Text("숨만 쉬어도 소모되는 에너지", style: TextStyle(fontSize: 12, color: Colors.grey)),
-              ],
-            ),
-          ),
+          const SizedBox(height: 12),
           Row(
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
-              Text(bmr != null ? bmr!.round().toString() : '-', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
+              Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
               const SizedBox(width: 4),
-              const Text('kcal', style: TextStyle(fontSize: 14, color: Colors.grey, fontWeight: FontWeight.w600)),
+              Text(unit, style: const TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold)),
             ],
           ),
         ],

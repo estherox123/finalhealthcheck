@@ -29,14 +29,35 @@ class HomeAssistantApi implements IotApi {
   };
 
   Future<Map<String, dynamic>> _getState(String entityId) async {
-    final res = await _client.get(Uri.parse('${_base}api/states/$entityId'),
-        headers: _headers);
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      return jsonDecode(res.body) as Map<String, dynamic>;
+    try {
+      final res = await _client.get(Uri.parse('${_base}api/states/$entityId'),
+          headers: _headers);
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        return jsonDecode(res.body) as Map<String, dynamic>;
+      }
+      // 에러 발생 시 로그 출력
+      print('HA state 조회 실패(${res.statusCode}) for $entityId');
+      return {};
+    } catch (e) {
+      print('HA state 조회 중 예외: $e');
+      return {};
     }
-    // 에러 발생 시 로그 출력
-    print('HA state 조회 실패(${res.statusCode}) for $entityId');
-    return {};
+  }
+
+  // ✅ [InBody] 엔티티 상태값을 double로 가져오는 헬퍼 메서드
+  Future<double> _getDoubleState(String entityId) async {
+    final data = await _getState(entityId);
+    // 디버깅이 끝나면 아래 print는 주석 처리하셔도 됩니다.
+    print('🔎 DEBUG: $entityId 상태 조회 결과: $data');
+
+    if (data.isEmpty) return 0.0;
+
+    final stateStr = data['state'] as String?;
+    if (stateStr == null || stateStr == 'unavailable' || stateStr == 'unknown') {
+      return 0.0;
+    }
+
+    return double.tryParse(stateStr) ?? 0.0;
   }
 
   Future<List<dynamic>> _callService(
@@ -60,11 +81,20 @@ class HomeAssistantApi implements IotApi {
 
   @override
   Future<IotSnapshot> fetchSnapshot() async {
+    // 병렬로 데이터 요청
     final results = await Future.wait([
       _fetchAircon(),
       _fetchHrv(),
       _fetchBlinds(),
       _fetchLights(),
+      // 인바디 데이터 병렬 조회
+      _getDoubleState('input_number.inbody_weight'),
+      _getDoubleState('input_number.inbody_muscle'),
+      _getDoubleState('input_number.inbody_fat'),
+      _getDoubleState('input_number.inbody_bmi'),
+      _getDoubleState('input_number.inbody_pbf'),
+      _getDoubleState('input_number.inbody_bmr'),
+      _getDoubleState('input_number.inbody_vfl'),
     ]);
 
     return IotSnapshot(
@@ -72,6 +102,15 @@ class HomeAssistantApi implements IotApi {
       hrv: results[1] as HrvState,
       blinds: results[2] as BlindsStatus,
       lights: results[3] as LightsState,
+
+      // 순서대로 매핑
+      inbodyWeight: results[4] as double,
+      inbodyMuscle: results[5] as double,
+      inbodyFat:    results[6] as double,
+      inbodyBMI:    results[7] as double,
+      inbodyPBF:    results[8] as double,
+      inbodyBMR:    results[9] as double,
+      inbodyVFL:    results[10] as double,
     );
   }
 
@@ -96,7 +135,14 @@ class HomeAssistantApi implements IotApi {
     final fanModeStr = attrs['fan_mode'] as String?;
     final swingModeStr = attrs['swing_mode'] as String?;
 
-    // 타이머 상태 확인
+    // ✅ [수정] 습도 가져오기 로직 (current_humidity 우선!)
+    double humidity = AirconState.initial.currentHumidity;
+    if (attrs.containsKey('current_humidity')) {
+      humidity = (attrs['current_humidity'] as num).toDouble();
+    } else if (attrs.containsKey('humidity')) {
+      humidity = (attrs['humidity'] as num).toDouble();
+    }
+
     try {
       final timerData = await _getState(_timerEntity);
 
@@ -110,7 +156,7 @@ class HomeAssistantApi implements IotApi {
         } else {
           _lastTimerHours = 1;
         }
-        if (_lastTimerHours == 0) _lastTimerHours = 1; // 0이면 1로 표시
+        if (_lastTimerHours == 0) _lastTimerHours = 1;
       } else {
         _lastTimerHours = 0;
       }
@@ -122,6 +168,7 @@ class HomeAssistantApi implements IotApi {
       isOn: isOn,
       temperature: temp.round().clamp(16, 30),
       currentTemperature: curTemp,
+      currentHumidity: humidity, // 수정된 습도값 적용
       mode: mode,
       timerHours: _lastTimerHours,
       fanSpeed: _mapHaFanToEnum(fanModeStr),
@@ -129,7 +176,6 @@ class HomeAssistantApi implements IotApi {
     );
   }
 
-  // ... (Hrv, Blinds, Lights 관련 메서드는 기존과 동일) ...
   Future<HrvState> _fetchHrv() async {
     final id = options.hrvEntityId;
     if (id == null || id.isEmpty) return HrvState.initial;
@@ -167,13 +213,13 @@ class HomeAssistantApi implements IotApi {
     return result;
   }
 
+  // --- 제어 메서드들 ---
+
   @override
   Future<AirconState> setAirconPower(bool on) async {
     final result = await _callService('climate', on ? 'turn_on' : 'turn_off', {
       'entity_id': options.acEntityId,
     });
-
-    // 에어컨 끌 때 타이머도 같이 취소
     if (!on) {
       try {
         await _callService('timer', 'cancel', {'entity_id': _timerEntity});
@@ -182,7 +228,6 @@ class HomeAssistantApi implements IotApi {
       }
       _lastTimerHours = 0;
     }
-
     return _parseResultOrFetch(result);
   }
 
@@ -218,7 +263,6 @@ class HomeAssistantApi implements IotApi {
       });
       _lastTimerHours = hours;
     }
-
     final cur = await _fetchAircon();
     return cur.copyWith(timerHours: _lastTimerHours);
   }
@@ -278,6 +322,8 @@ class HomeAssistantApi implements IotApi {
     return _fetchLights();
   }
 
+  // --- 내부 헬퍼 메서드 ---
+
   Future<AirconState> _parseResultOrFetch(List<dynamic> result) async {
     final parsed = _airconFromServiceResult(result);
     if (parsed != null) return parsed;
@@ -297,13 +343,20 @@ class HomeAssistantApi implements IotApi {
     final attrs = (map['attributes'] as Map?) ?? {};
     final temp = (attrs['temperature'] ?? attrs['target_temp_high'] ?? attrs['target_temp_low']) as num? ?? AirconState.initial.temperature;
     final curTemp = (attrs['current_temperature'] as num?)?.toDouble() ?? AirconState.initial.currentTemperature;
-    final hum = (attrs['humidity'] ?? attrs['current_humidity']) as num? ?? AirconState.initial.currentHumidity;
+
+    // ✅ [수정] 제어 응답에서도 current_humidity 우선 처리
+    double humidity = AirconState.initial.currentHumidity;
+    if (attrs.containsKey('current_humidity')) {
+      humidity = (attrs['current_humidity'] as num).toDouble();
+    } else if (attrs.containsKey('humidity')) {
+      humidity = (attrs['humidity'] as num).toDouble();
+    }
 
     return AirconState(
       isOn: isOn,
       temperature: temp.round().clamp(16, 30),
       currentTemperature: curTemp,
-      currentHumidity: hum.toDouble(),
+      currentHumidity: humidity, // 수정된 습도값 적용
       mode: mode,
       timerHours: _lastTimerHours,
       fanSpeed: _mapHaFanToEnum(attrs['fan_mode'] as String?),

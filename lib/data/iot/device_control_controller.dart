@@ -206,7 +206,7 @@ class DeviceControlController extends ChangeNotifier {
 
 
   // =========================================================
-  // ✅ [업그레이드] 모드별 온도 저장 및 복원 로직
+  // 모드별 온도 저장 및 복원 로직
   // =========================================================
 
   static const _keyLastMode = 'ac_last_mode_idx';
