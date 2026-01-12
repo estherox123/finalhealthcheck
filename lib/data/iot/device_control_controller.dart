@@ -1,7 +1,7 @@
 // lib/data/iot/device_control_controller.dart
 
 import 'dart:async';
-import 'package:flutter/material.dart'; // Color 사용을 위해 추가
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'iot_repository.dart';
 import 'models.dart';
@@ -25,11 +25,18 @@ class DeviceControlController extends ChangeNotifier {
     try {
       snapshot = await repo.load();
 
-      // 에어컨이 꺼져있다면 마지막 상태 복원, 켜져있다면 현재 상태 저장
-      if (!snapshot.aircon.isOn) {
-        await _restoreLastSettings();
+      // 거실 에어컨 상태 복원/저장
+      if (!snapshot.livingAc.isOn) {
+        await _restoreLastSettings(AcLocation.living);
       } else {
-        await _saveCurrentSettings();
+        await _saveCurrentSettings(AcLocation.living);
+      }
+
+      // 안방 에어컨 상태 복원/저장
+      if (!snapshot.bedroomAc.isOn) {
+        await _restoreLastSettings(AcLocation.bedroom);
+      } else {
+        await _saveCurrentSettings(AcLocation.bedroom);
       }
 
       status = IotStatus.ready;
@@ -41,208 +48,216 @@ class DeviceControlController extends ChangeNotifier {
 
   // ================= UI 헬퍼 (배경색) =================
 
-  /// 현재 에어컨 모드에 알맞는 배경 색상을 반환합니다.
-  /// UI 쪽에서 controller.uiColor 로 접근해서 사용하세요.
-  Color get uiColor {
-    if (!snapshot.aircon.isOn) {
-      return Colors.white; // 꺼짐 (기본 흰색)
-    }
-    switch (snapshot.aircon.mode) {
-      case AcMode.heat:
-        return const Color(0xFFFFF3E0); // 난방: 연한 주황
-      case AcMode.cool:
-        return const Color(0xFFE3F2FD); // 냉방: 연한 파랑
-      case AcMode.dry:
-        return const Color(0xFFF3E5F5); // 제습: 연한 보라
-      case AcMode.fan:
-        return const Color(0xFFE8F5E9); // 송풍: 연한 초록
-      case AcMode.auto:
-        return const Color(0xFFE0F2F1); // 자동: 연한 청록
+  /// 에어컨 상태(모드/전원)에 따른 배경색 반환
+  Color getUiColor(AcMode mode) {
+    // 꺼짐 상태 처리는 UI 쪽에서 state.isOn 체크 후 호출 권장
+    switch (mode) {
+      case AcMode.heat: return const Color(0xFFFFF3E0); // 난방
+      case AcMode.cool: return const Color(0xFFE3F2FD); // 냉방
+      case AcMode.dry:  return const Color(0xFFF3E5F5); // 제습
+      case AcMode.fan:  return const Color(0xFFE8F5E9); // 송풍
+      case AcMode.auto: return const Color(0xFFE0F2F1); // 자동
     }
   }
 
-  Color get activeColor {
-    if (!snapshot.aircon.isOn) return Colors.grey;
-    switch (snapshot.aircon.mode) {
+  /// 슬라이더 등 활성 색상
+  Color getActiveColor(AcMode mode) {
+    switch (mode) {
       case AcMode.heat: return Colors.orange;
       case AcMode.cool: return Colors.blue;
-      case AcMode.dry: return Colors.purple;
-      case AcMode.fan: return Colors.green;
+      case AcMode.dry:  return Colors.purple;
+      case AcMode.fan:  return Colors.green;
       case AcMode.auto: return Colors.teal;
     }
   }
 
+  // ================= 헬퍼: 스냅샷 갱신 =================
+
+  // 위치에 따라 적절한 AirconState를 업데이트하여 새 스냅샷을 만듦
+  IotSnapshot _updateAcSnapshot(AcLocation loc, AirconState newAcState) {
+    if (loc == AcLocation.living) {
+      return snapshot.copyWith(livingAc: newAcState);
+    } else {
+      return snapshot.copyWith(bedroomAc: newAcState);
+    }
+  }
+
+  AirconState _getAcState(AcLocation loc) {
+    return loc == AcLocation.living ? snapshot.livingAc : snapshot.bedroomAc;
+  }
+
   // ================= 에어컨 제어 로직 =================
 
-  Future<void> toggleAc() async {
+  Future<void> toggleAc(AcLocation loc) async {
     final seq = ++_airconSeq;
-    final prev = snapshot.aircon;
+    final prev = _getAcState(loc);
     final optimistic = prev.copyWith(isOn: !prev.isOn);
-    snapshot = snapshot.copyWith(aircon: optimistic);
+
+    snapshot = _updateAcSnapshot(loc, optimistic);
     notifyListeners();
 
-    _saveCurrentSettings();
+    _saveCurrentSettings(loc);
 
     try {
-      await repo.setAcPower(optimistic.isOn);
+      await repo.setAcPower(loc, optimistic.isOn); // Repo도 location 지원 필요
     } catch (_) {
       if (seq == _airconSeq) {
-        snapshot = snapshot.copyWith(aircon: prev);
+        snapshot = _updateAcSnapshot(loc, prev); // 롤백
         notifyListeners();
       }
     }
   }
 
-  Future<void> acTempDelta(int d) async {
-    final seq = ++_airconSeq;
-    final prev = snapshot.aircon;
-    final newTemp = (prev.temperature + d).clamp(16, 30) as int;
-    final optimistic = prev.copyWith(temperature: newTemp);
-    snapshot = snapshot.copyWith(aircon: optimistic);
-    notifyListeners();
-
-    _saveCurrentSettings();
-
-    if (_tempDebounceTimer?.isActive ?? false) _tempDebounceTimer!.cancel();
-    _tempDebounceTimer = Timer(const Duration(milliseconds: 500), () async {
-      try {
-        await repo.setAcTemp(newTemp);
-      } catch (_) {
-        if (seq == _airconSeq) {
-          snapshot = snapshot.copyWith(aircon: prev);
-          notifyListeners();
-        }
-      }
-    });
-  }
-
-  Future<void> setTargetTemperature(double val) async {
-    final int target = val.toInt().clamp(16, 30);
-    if (target == snapshot.aircon.temperature) return;
+  Future<void> setTargetTemperature(AcLocation loc, double val) async {
+    final int target = val.toInt().clamp(18, 30);
+    final currentAc = _getAcState(loc);
+    if (target == currentAc.temperature) return;
 
     final seq = ++_airconSeq;
-    final prev = snapshot.aircon;
+    final prev = currentAc;
     final optimistic = prev.copyWith(temperature: target);
-    snapshot = snapshot.copyWith(aircon: optimistic);
+
+    snapshot = _updateAcSnapshot(loc, optimistic);
     notifyListeners();
 
-    _saveCurrentSettings();
+    _saveCurrentSettings(loc);
 
     if (_tempDebounceTimer?.isActive ?? false) _tempDebounceTimer!.cancel();
     _tempDebounceTimer = Timer(const Duration(milliseconds: 500), () async {
       try {
-        await repo.setAcTemp(target);
+        await repo.setAcTemp(loc, target);
       } catch (_) {
         if (seq == _airconSeq) {
-          snapshot = snapshot.copyWith(aircon: prev);
+          snapshot = _updateAcSnapshot(loc, prev);
           notifyListeners();
         }
       }
     });
   }
 
-  // ✅ [수정됨] 모드 변경 시 해당 모드의 마지막 온도를 불러옴
-  Future<void> setAcMode(AcMode newMode) async {
-    if (snapshot.aircon.mode == newMode) return;
+  Future<void> setAcMode(AcLocation loc, AcMode newMode) async {
+    final currentAc = _getAcState(loc);
+    if (currentAc.mode == newMode) return;
 
     final seq = ++_airconSeq;
-    final prev = snapshot.aircon;
+    final prev = currentAc;
 
-    // 1. 새 모드에 저장된 마지막 온도를 불러오기 (없으면 기본값)
-    final savedTemp = await _getSavedTempForMode(newMode);
+    // 해당 모드의 마지막 저장 온도 불러오기
+    final savedTemp = await _getSavedTempForMode(loc, newMode);
 
-    // 2. 모드와 온도를 동시에 업데이트
     final optimistic = prev.copyWith(
       mode: newMode,
       temperature: savedTemp,
     );
 
-    snapshot = snapshot.copyWith(aircon: optimistic);
+    snapshot = _updateAcSnapshot(loc, optimistic);
     notifyListeners();
 
-    // 3. 변경된 상태 즉시 저장
-    _saveCurrentSettings();
+    _saveCurrentSettings(loc);
 
     try {
-      await repo.setAcMode(newMode);
+      await repo.setAcMode(loc, newMode);
       if (prev.temperature != savedTemp) {
-        await repo.setAcTemp(savedTemp);
+        await repo.setAcTemp(loc, savedTemp);
       }
     } catch (_) {
       if (seq == _airconSeq) {
-        snapshot = snapshot.copyWith(aircon: prev);
+        snapshot = _updateAcSnapshot(loc, prev);
         notifyListeners();
       }
     }
   }
 
-  Future<void> setAcTimer(int h) async {
+  Future<void> setAcFanSpeed(AcLocation loc, AcFanSpeed speed) async {
     final seq = ++_airconSeq;
-    final prev = snapshot.aircon;
-    final optimistic = prev.copyWith(timerHours: h);
-    snapshot = snapshot.copyWith(aircon: optimistic);
+    final prev = _getAcState(loc);
+    final optimistic = prev.copyWith(fanSpeed: speed);
+
+    snapshot = _updateAcSnapshot(loc, optimistic);
     notifyListeners();
-    try { await repo.setAcTimer(h); } catch (_) {
-      if (seq == _airconSeq) { snapshot = snapshot.copyWith(aircon: prev); notifyListeners(); }
+
+    _saveCurrentSettings(loc);
+
+    try { await repo.setAcFanSpeed(loc, speed); } catch (_) {
+      snapshot = _updateAcSnapshot(loc, prev);
+      notifyListeners();
     }
   }
 
-  Future<void> setAcFanSpeed(AcFanSpeed speed) async {
+  Future<void> setAcTimer(AcLocation loc, int h) async {
     final seq = ++_airconSeq;
-    final prev = snapshot.aircon;
-    final optimistic = prev.copyWith(fanSpeed: speed);
-    snapshot = snapshot.copyWith(aircon: optimistic);
+    final prev = _getAcState(loc);
+    final optimistic = prev.copyWith(timerHours: h);
+
+    snapshot = _updateAcSnapshot(loc, optimistic);
     notifyListeners();
-    _saveCurrentSettings();
-    try { await repo.setAcFanSpeed(speed); } catch (_) { /* 롤백 */ }
+
+    // 타이머는 서버 로직이거나 앱 로컬 로직일 수 있음. 일단 Repo 호출
+    try { await repo.setAcTimer(loc, h); } catch (_) {
+      if (seq == _airconSeq) {
+        snapshot = _updateAcSnapshot(loc, prev);
+        notifyListeners();
+      }
+    }
   }
 
-  // (기타 메서드)
-  Future<void> toggleAcSwing() async {}
-  Future<void> toggleHrv() async {}
+  // ================= 환기 제어 =================
+  Future<void> toggleHrv() async {
+    final prev = snapshot.hrv.isOn;
+    snapshot = snapshot.copyWith(hrv: snapshot.hrv.copyWith(isOn: !prev));
+    notifyListeners();
+    try {
+      await repo.setHrvPower(!prev);
+    } catch (_) {
+      snapshot = snapshot.copyWith(hrv: snapshot.hrv.copyWith(isOn: prev));
+      notifyListeners();
+    }
+  }
+
+  // (조명, 블라인드 메서드는 현재 미사용이므로 생략 가능하나 틀은 유지)
   Future<void> setBlinds(BlindsStatus st) async {}
   Future<void> toggleLight(String room) async {}
   Future<void> setBrightness(String room, BrightnessLevel b) async {}
 
 
   // =========================================================
-  // 모드별 온도 저장 및 복원 로직
+  // 모드별 온도 저장 및 복원 로직 (위치별 분리)
   // =========================================================
 
-  static const _keyLastMode = 'ac_last_mode_idx';
-  static const _keyLastFan = 'ac_last_fan_idx';
-
-  // 모드별 온도 키 생성 헬퍼
-  String _tempKey(AcMode m) => 'ac_temp_${m.name}';
+  // Key 생성 헬퍼: "living_ac_temp_cool", "bedroom_ac_last_mode_idx" 등
+  String _key(AcLocation loc, String suffix) => '${loc.name}_$suffix';
 
   int _defaultTempFor(AcMode m) {
     switch (m) {
-      case AcMode.heat: return 26; // 난방은 따뜻하게
-      case AcMode.cool: return 24; // 냉방은 시원하게
+      case AcMode.heat: return 26;
+      case AcMode.cool: return 24;
       case AcMode.dry: return 24;
       default: return 24;
     }
   }
 
-  Future<int> _getSavedTempForMode(AcMode mode) async {
+  Future<int> _getSavedTempForMode(AcLocation loc, AcMode mode) async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getInt(_tempKey(mode)) ?? _defaultTempFor(mode);
+    // 예: living_ac_temp_cool
+    return prefs.getInt(_key(loc, 'ac_temp_${mode.name}')) ?? _defaultTempFor(mode);
   }
 
-  Future<void> _saveCurrentSettings() async {
+  Future<void> _saveCurrentSettings(AcLocation loc) async {
     final prefs = await SharedPreferences.getInstance();
-    final ac = snapshot.aircon;
-    await prefs.setInt(_keyLastMode, ac.mode.index);
-    await prefs.setInt(_keyLastFan, ac.fanSpeed.index);
-    await prefs.setInt(_tempKey(ac.mode), ac.temperature);
+    final ac = _getAcState(loc);
+
+    await prefs.setInt(_key(loc, 'ac_last_mode_idx'), ac.mode.index);
+    await prefs.setInt(_key(loc, 'ac_last_fan_idx'), ac.fanSpeed.index);
+    // 모드별 온도 저장
+    await prefs.setInt(_key(loc, 'ac_temp_${ac.mode.name}'), ac.temperature);
   }
 
-  Future<void> _restoreLastSettings() async {
+  Future<void> _restoreLastSettings(AcLocation loc) async {
     final prefs = await SharedPreferences.getInstance();
-    final savedModeIdx = prefs.getInt(_keyLastMode);
-    final savedFanIdx = prefs.getInt(_keyLastFan);
+    final savedModeIdx = prefs.getInt(_key(loc, 'ac_last_mode_idx'));
+    final savedFanIdx = prefs.getInt(_key(loc, 'ac_last_fan_idx'));
 
-    AirconState newAc = snapshot.aircon;
+    AirconState newAc = _getAcState(loc);
 
     if (savedModeIdx != null && savedModeIdx < AcMode.values.length) {
       newAc = newAc.copyWith(mode: AcMode.values[savedModeIdx]);
@@ -251,13 +266,13 @@ class DeviceControlController extends ChangeNotifier {
       newAc = newAc.copyWith(fanSpeed: AcFanSpeed.values[savedFanIdx]);
     }
 
-    final savedTemp = prefs.getInt(_tempKey(newAc.mode));
+    final savedTemp = prefs.getInt(_key(loc, 'ac_temp_${newAc.mode.name}'));
     if (savedTemp != null) {
       newAc = newAc.copyWith(temperature: savedTemp);
     } else {
       newAc = newAc.copyWith(temperature: _defaultTempFor(newAc.mode));
     }
 
-    snapshot = snapshot.copyWith(aircon: newAc);
+    snapshot = _updateAcSnapshot(loc, newAc);
   }
 }

@@ -2,31 +2,56 @@
 
 import 'package:flutter/foundation.dart';
 
-/// 에어컨 모드
+// -------------------- Enums --------------------
+
+enum AcLocation { living, bedroom }
+
 enum AcMode { cool, heat, fan, dry, auto }
 
 extension AcModeLabel on AcMode {
   String get label => switch (this) {
     AcMode.cool => '냉방',
     AcMode.heat => '난방',
-    AcMode.fan  => '송풍',
-    AcMode.dry  => '제습',
+    AcMode.fan => '송풍',
+    AcMode.dry => '제습',
     AcMode.auto => '자동',
   };
 }
 
 enum AcFanSpeed { auto, low, medium, high }
 
-/// 에어컨 상태
+enum BlindsStatus { open, stop, close }
+
+extension BlindsStatusLabel on BlindsStatus {
+  String get label => switch (this) {
+    BlindsStatus.open => '열림',
+    BlindsStatus.stop => '정지',
+    BlindsStatus.close => '닫힘'
+  };
+}
+
+enum BrightnessLevel { dim, normal, bright }
+
+extension BrightnessLabel on BrightnessLevel {
+  String get label => switch (this) {
+    BrightnessLevel.dim => '어둡게',
+    BrightnessLevel.normal => '보통',
+    BrightnessLevel.bright => '밝게'
+  };
+}
+
+// -------------------- State Models --------------------
+
 class AirconState {
   final bool isOn;
-  final int temperature;        // 희망 온도
+  final int temperature;
   final double currentTemperature;
   final double currentHumidity;
   final AcMode mode;
   final int timerHours;
   final AcFanSpeed fanSpeed;
   final bool isSwing;
+  final bool isAutoMode;
 
   const AirconState({
     required this.isOn,
@@ -37,6 +62,7 @@ class AirconState {
     required this.timerHours,
     this.fanSpeed = AcFanSpeed.auto,
     this.isSwing = false,
+    this.isAutoMode = false,
   });
 
   static const initial = AirconState(
@@ -48,6 +74,7 @@ class AirconState {
     timerHours: 0,
     fanSpeed: AcFanSpeed.auto,
     isSwing: false,
+    isAutoMode: false,
   );
 
   AirconState copyWith({
@@ -59,6 +86,7 @@ class AirconState {
     int? timerHours,
     AcFanSpeed? fanSpeed,
     bool? isSwing,
+    bool? isAutoMode,
   }) {
     return AirconState(
       isOn: isOn ?? this.isOn,
@@ -69,83 +97,121 @@ class AirconState {
       timerHours: timerHours ?? this.timerHours,
       fanSpeed: fanSpeed ?? this.fanSpeed,
       isSwing: isSwing ?? this.isSwing,
+      isAutoMode: isAutoMode ?? this.isAutoMode,
     );
   }
 }
 
-/// HRV(환기) 상태
+@immutable
+class AdminSettings {
+  final String seasonMode;
+  final double summerTriggerTemp;
+  final double summerTargetTemp;
+  final double winterTriggerTemp;
+  final double winterTargetTemp;
+  final double humidityTrigger;
+  final double humidityTarget;
+
+  const AdminSettings({
+    required this.seasonMode,
+    required this.summerTriggerTemp,
+    required this.summerTargetTemp,
+    required this.winterTriggerTemp,
+    required this.winterTargetTemp,
+    required this.humidityTrigger,
+    required this.humidityTarget,
+  });
+
+  static const initial = AdminSettings(
+    seasonMode: 'Auto (사계절 감지)',
+    summerTriggerTemp: 26.5,
+    summerTargetTemp: 24.5,
+    winterTriggerTemp: 19.0,
+    winterTargetTemp: 22.0,
+    humidityTrigger: 65.0,
+    humidityTarget: 50.0,
+  );
+
+  AdminSettings copyWith({
+    String? seasonMode,
+    double? summerTriggerTemp,
+    double? summerTargetTemp,
+    double? winterTriggerTemp,
+    double? winterTargetTemp,
+    double? humidityTrigger,
+    double? humidityTarget,
+  }) {
+    return AdminSettings(
+      seasonMode: seasonMode ?? this.seasonMode,
+      summerTriggerTemp: summerTriggerTemp ?? this.summerTriggerTemp,
+      summerTargetTemp: summerTargetTemp ?? this.summerTargetTemp,
+      winterTriggerTemp: winterTriggerTemp ?? this.winterTriggerTemp,
+      winterTargetTemp: winterTargetTemp ?? this.winterTargetTemp,
+      humidityTrigger: humidityTrigger ?? this.humidityTrigger,
+      humidityTarget: humidityTarget ?? this.humidityTarget,
+    );
+  }
+}
+
 @immutable
 class HrvState {
   final bool isOn;
   const HrvState({required this.isOn});
-
   HrvState copyWith({bool? isOn}) => HrvState(isOn: isOn ?? this.isOn);
-
   static const initial = HrvState(isOn: false);
 }
 
-/// 블라인드 상태
-enum BlindsStatus { open, stop, close }
-extension BlindsStatusLabel on BlindsStatus {
-  String get label => switch (this) {
-    BlindsStatus.open  => '열림',
-    BlindsStatus.stop  => '정지',
-    BlindsStatus.close => '닫힘',
-  };
-}
-
-/// 조명 밝기
-enum BrightnessLevel { dim, normal, bright }
-extension BrightnessLabel on BrightnessLevel {
-  String get label => switch (this) {
-    BrightnessLevel.dim    => '어둡게',
-    BrightnessLevel.normal => '보통',
-    BrightnessLevel.bright => '밝게',
-  };
-}
-
-/// 방별 조명 상태
 @immutable
 class LightRoomState {
   final bool isOn;
   final BrightnessLevel brightness;
   const LightRoomState({required this.isOn, required this.brightness});
-
   LightRoomState copyWith({bool? isOn, BrightnessLevel? brightness}) =>
-      LightRoomState(
-        isOn: isOn ?? this.isOn,
-        brightness: brightness ?? this.brightness,
-      );
-
+      LightRoomState(isOn: isOn ?? this.isOn, brightness: brightness ?? this.brightness);
   static const off = LightRoomState(isOn: false, brightness: BrightnessLevel.normal);
 }
 
-/// 전체 조명 묶음
 typedef LightsState = Map<String, LightRoomState>;
 
-/// 전체 IoT 대시보드 스냅샷
+// -------------------- Main Snapshot --------------------
+
 @immutable
 class IotSnapshot {
-  final AirconState aircon;
+  // Device States
+  final AirconState livingAc;
+  final AirconState bedroomAc;
   final HrvState hrv;
   final BlindsStatus blinds;
   final LightsState lights;
+  final AdminSettings adminSettings;
 
-  // 인바디 데이터 필드 (7종)
-  final double inbodyWeight; // 체중 (kg)
-  final double inbodyMuscle; // 골격근량 (kg)
-  final double inbodyFat;    // 체지방량 (kg)
-  final double inbodyBMI;    // BMI (kg/m²)
-  final double inbodyPBF;    // 체지방률 (%)
-  final double inbodyBMR;    // 기초대사량 (kcal)
-  final double inbodyVFL;    // 내장지방레벨 (Lv)
+  // Health Data
+  final double inbodyWeight;
+  final double inbodyMuscle;
+  final double inbodyFat;
+  final double inbodyBMI;
+  final double inbodyPBF;
+  final double inbodyBMR;
+  final double inbodyVFL;
+  final double bpSystolic;
+  final double bpDiastolic;
+  final double bpPulse;
+
+  // Air Quality Data (8종)
+  final int co2;
+  final double pm1;
+  final double pm25;
+  final double pm10;
+  final int odor;
+  final int airQuality;
 
   const IotSnapshot({
-    required this.aircon,
+    required this.livingAc,
+    required this.bedroomAc,
     required this.hrv,
     required this.blinds,
     required this.lights,
-    // 생성자 초기화
+    required this.adminSettings,
     this.inbodyWeight = 0.0,
     this.inbodyMuscle = 0.0,
     this.inbodyFat = 0.0,
@@ -153,14 +219,25 @@ class IotSnapshot {
     this.inbodyPBF = 0.0,
     this.inbodyBMR = 0.0,
     this.inbodyVFL = 0.0,
+    this.bpSystolic = 0.0,
+    this.bpDiastolic = 0.0,
+    this.bpPulse = 0.0,
+    // 초기값 0
+    this.co2 = 0,
+    this.pm1 = 0.0,
+    this.pm25 = 0.0,
+    this.pm10 = 0.0,
+    this.odor = 0,
+    this.airQuality = 0,
   });
 
   IotSnapshot copyWith({
-    AirconState? aircon,
+    AirconState? livingAc,
+    AirconState? bedroomAc,
     HrvState? hrv,
     BlindsStatus? blinds,
     LightsState? lights,
-    // copyWith 파라미터
+    AdminSettings? adminSettings,
     double? inbodyWeight,
     double? inbodyMuscle,
     double? inbodyFat,
@@ -168,13 +245,23 @@ class IotSnapshot {
     double? inbodyPBF,
     double? inbodyBMR,
     double? inbodyVFL,
+    double? bpSystolic,
+    double? bpDiastolic,
+    double? bpPulse,
+    int? co2,
+    double? pm1,
+    double? pm25,
+    double? pm10,
+    int? odor,
+    int? airQuality,
   }) =>
       IotSnapshot(
-        aircon: aircon ?? this.aircon,
+        livingAc: livingAc ?? this.livingAc,
+        bedroomAc: bedroomAc ?? this.bedroomAc,
         hrv: hrv ?? this.hrv,
         blinds: blinds ?? this.blinds,
         lights: lights ?? this.lights,
-        // 값 할당
+        adminSettings: adminSettings ?? this.adminSettings,
         inbodyWeight: inbodyWeight ?? this.inbodyWeight,
         inbodyMuscle: inbodyMuscle ?? this.inbodyMuscle,
         inbodyFat: inbodyFat ?? this.inbodyFat,
@@ -182,17 +269,27 @@ class IotSnapshot {
         inbodyPBF: inbodyPBF ?? this.inbodyPBF,
         inbodyBMR: inbodyBMR ?? this.inbodyBMR,
         inbodyVFL: inbodyVFL ?? this.inbodyVFL,
+        bpSystolic: bpSystolic ?? this.bpSystolic,
+        bpDiastolic: bpDiastolic ?? this.bpDiastolic,
+        bpPulse: bpPulse ?? this.bpPulse,
+        co2: co2 ?? this.co2,
+        pm1: pm1 ?? this.pm1,
+        pm25: pm25 ?? this.pm25,
+        pm10: pm10 ?? this.pm10,
+        odor: odor ?? this.odor,
+        airQuality: airQuality ?? this.airQuality,
       );
 
   static IotSnapshot initial() => IotSnapshot(
-    aircon: AirconState.initial,
+    livingAc: AirconState.initial,
+    bedroomAc: AirconState.initial,
     hrv: HrvState.initial,
     blinds: BlindsStatus.stop,
     lights: <String, LightRoomState>{
       '거실': LightRoomState.off,
       '침실': LightRoomState.off,
-      '주방': LightRoomState.off,
+      '주방': LightRoomState.off
     },
-    // 숫자는 기본 0.0으로 자동 초기화
+    adminSettings: AdminSettings.initial,
   );
 }
