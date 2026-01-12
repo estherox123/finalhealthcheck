@@ -17,6 +17,11 @@ abstract class IotApi {
   Future<AirconState> setAirconFanSpeed(AcFanSpeed speed);
   Future<AirconState> setAirconSwing(bool isSwing);
 
+  // 관리자 설정 제어 메서드
+  Future<AirconState> setAcAutoMode(bool on);
+  Future<AdminSettings> setAdminNumber(String entitySuffix, double value);
+  Future<AdminSettings> setSeasonMode(String mode);
+
   // HRV
   Future<HrvState> setHrvPower(bool on);
 

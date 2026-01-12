@@ -1,9 +1,4 @@
 // lib/pages/health_summary_page.dart
-/// 헬스 데이터 요약 페이지 (시니어 친화적 디자인 리뉴얼)
-/// - 카드형 UI, 큰 글씨, 직관적 색상/배지 적용
-/// 추후 호흡수, 체온 데이터 추가 필요
-
-// lib/pages/health_summary_page.dart
 
 import 'dart:async';
 import 'dart:convert';
@@ -22,13 +17,19 @@ import 'base_health_page.dart';
 import 'sleep_detail_page.dart';
 import 'steps_page.dart';
 import 'heart_rate_detail_page.dart';
-import 'fecal_occult_blood_page.dart'; // 대변검사 스토어
+import 'fecal_occult_blood_page.dart';
 import 'stress_recovery_page.dart';
 import 'inbody_page.dart';
+import 'blood_pressure_page.dart';
 import '../data/recovery_score.dart' as rec;
 import '../reports/health_exporter.dart';
 import '../reports/health_report_models.dart';
 import '../reports/health_report_pdf.dart';
+
+import '../data/iot/device_control_controller.dart';
+import '../data/iot/home_assistant_api.dart';
+import '../data/iot/home_assistant_options.dart';
+import '../data/iot/iot_repository.dart';
 
 /// 날짜 범위
 enum SummaryRange { today, week, month }
@@ -41,6 +42,11 @@ class HealthSummaryPage extends HealthStatefulPage {
 }
 
 class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
+  late final DeviceControlController _haController;
+
+  // ignore: unused_field
+  bool _haReady = false;
+
   @override
   List<HealthDataType> get types => const [
     HealthDataType.STEPS,
@@ -49,11 +55,7 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     HealthDataType.HEART_RATE,
     HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
     HealthDataType.RESPIRATORY_RATE,
-    HealthDataType.BODY_TEMPERATURE,
     HealthDataType.WEIGHT,
-    HealthDataType.HEIGHT,
-    HealthDataType.BODY_MASS_INDEX,
-    HealthDataType.BODY_FAT_PERCENTAGE,
     HealthDataType.BLOOD_PRESSURE_SYSTOLIC,
     HealthDataType.BLOOD_PRESSURE_DIASTOLIC,
     HealthDataType.BLOOD_GLUCOSE,
@@ -66,14 +68,266 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
   @override
   void initState() {
     super.initState();
+    final api = HomeAssistantApi(options: HomeAssistantOptions.fromEnv());
+    final repo = IotRepository(api);
+    _haController = DeviceControlController(repo);
+    _haController.addListener(_onHaUpdate);
+
     authReady.then((_) {
       if (!mounted) return;
-      _load();
+      _loadAllData();
     });
   }
 
-  // ---------------- 데이터 로딩 및 분석 로직 ----------------
+  void _onHaUpdate() {
+    if (mounted) setState(() {});
+  }
 
+  @override
+  void dispose() {
+    _haController.removeListener(_onHaUpdate);
+    super.dispose();
+  }
+
+  Future<void> _loadAllData() async {
+    setState(() => _loading = true);
+    try {
+      await health.requestAuthorization(types);
+      await Future.wait([
+        _haController.init(),
+        _loadPhoneDataInternal(),
+      ]);
+      _haReady = true;
+    } catch (e) {
+      debugPrint("Data Load Error: $e");
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadPhoneDataInternal() async {
+    try {
+      final now = DateTime.now();
+      final today0 = DateTime(now.year, now.month, now.day);
+      final tomorrow0 = today0.add(const Duration(days: 1));
+
+      int? todaySteps;
+      Duration? sleepLastNight;
+      rec.RecoveryScore? recovery;
+
+      try {
+        final steps = await health.getTotalStepsInInterval(today0, tomorrow0);
+        todaySteps = steps;
+      } catch (_) {}
+
+      final sleepEnd = today0.add(const Duration(hours: 12));
+      final sleepStart = today0.subtract(const Duration(hours: 6));
+      sleepLastNight = await _sleepTotalInWindow(sleepStart, sleepEnd);
+
+      if (_range == SummaryRange.today) recovery = await _loadTodayRecoveryScore(today0);
+
+      double? glucose = await _fetchLatest(HealthDataType.BLOOD_GLUCOSE);
+      final glucoseInfo = glucose != null
+          ? _analyzeGlucose(glucose.toInt())
+          : (label: '기록 없음', status: _Status.warn);
+
+      final fecalStore = FecalLocalStore();
+      final fecalHistory = await fecalStore.loadHistory();
+      final fecalLast = fecalHistory.isNotEmpty ? fecalHistory.first : null;
+      final fecalCycle = _calcCycleStatus(fecalLast?.date, 10);
+      _Status finalFecalStatus = fecalCycle.status;
+      if (fecalLast?.result == FecalResult.suspect) finalFecalStatus = _Status.bad;
+
+      final prefs = await SharedPreferences.getInstance();
+      final urineStr = prefs.getString('urine_last_date');
+      final urineDate = urineStr != null ? DateTime.tryParse(urineStr) : null;
+      final urineResultStr = prefs.getString('urine_last_result') ?? '기록 없음';
+      final urineCycle = _calcCycleStatus(urineDate, 7);
+
+      _data = _SummaryModel(
+        recoveryScore: recovery?.score,
+        recoveryLabel: recovery?.label,
+        recoveryLowConfidence: recovery?.lowConfidence,
+        stepsToday: todaySteps,
+        sleepYesterday: sleepLastNight,
+        glucoseVal: glucose?.toInt(),
+        glucoseStatus: (glucose != null) ? glucoseInfo.status : _Status.warn,
+        glucoseLabel: (glucose != null) ? glucoseInfo.label : null,
+        fecalLastDate: fecalLast?.date,
+        fecalResultText: fecalLast?.result == FecalResult.suspect ? '잠혈 의심' : (fecalLast == null ? '기록 없음' : '잠혈 없음'),
+        fecalTagText: fecalCycle.tagText,
+        fecalStatus: finalFecalStatus,
+        urineLastDate: urineDate,
+        urineResultText: urineDate == null ? '기록 없음' : urineResultStr,
+        urineTagText: urineCycle.tagText,
+        urineStatus: urineCycle.status,
+      );
+    } catch (e) {
+      debugPrint("Phone Data Internal Error: $e");
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading || _data == null) {
+      return Scaffold(
+          backgroundColor: const Color(0xFFF0F2F5),
+          appBar: AppBar(title: const Text('건강 요약')),
+          body: const Center(child: CircularProgressIndicator())
+      );
+    }
+
+    final d = _data!;
+    final haSnap = _haController.snapshot;
+
+    // [체중]
+    final weightVal = haSnap.inbodyWeight > 0 ? haSnap.inbodyWeight : null;
+    final weightInfo = _analyzeWeightStatus(weight: weightVal, bodyFat: haSnap.inbodyPBF, directBmi: haSnap.inbodyBMI);
+
+    // [혈압]
+    final sys = haSnap.bpSystolic > 0 ? haSnap.bpSystolic.toInt() : null;
+    final dia = haSnap.bpDiastolic > 0 ? haSnap.bpDiastolic.toInt() : null;
+    final bpInfo = (sys != null && dia != null)
+        ? _analyzeBP(sys, dia)
+        : (label: '기록 없음', status: _Status.warn);
+
+    // [심박수]
+    final hrVal = haSnap.bpPulse > 0 ? haSnap.bpPulse : null;
+    final hrInfo = hrVal != null
+        ? _analyzeHR(hrVal)
+        : (label: '기록 없음', status: _Status.warn);
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF0F2F5),
+      appBar: AppBar(
+        title: const Text('건강 요약', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 22)),
+        backgroundColor: const Color(0xFFF0F2F5), elevation: 0, iconTheme: const IconThemeData(color: Colors.black87),
+        actions: [
+          IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: _loadAllData
+          )
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: _loadAllData,
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          children: [
+            // 1. 회복 점수
+            _SectionHeader('오늘 회복 상태'),
+            _RecoveryCard(
+              score: d.recoveryScore,
+              label: _recoveryLabelText(d.recoveryLabel),
+              status: _recoveryLabelToStatus(d.recoveryLabel),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StressRecoveryPage())),
+            ),
+            const SizedBox(height: 24),
+
+            // 2. 활동 및 수면
+            _SectionHeader('활동 및 수면'),
+            GridView.count(
+              crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
+              childAspectRatio: 1.1, mainAxisSpacing: 12, crossAxisSpacing: 12,
+              children: [
+                _HealthGridCard(
+                  title: '활동량',
+                  value: d.stepsToday != null ? NumberFormat('#,###').format(d.stepsToday) : '기록 없음',
+                  unit: d.stepsToday != null ? '걸음' : null, // ✅ 단위 분리
+                  status: (d.stepsToday ?? 0) >= 5000 ? _Status.good : _Status.warn,
+                  statusLabel: d.stepsToday != null ? ((d.stepsToday! >= 5000) ? '목표 달성' : '운동 필요') : null,
+                  progress: (d.stepsToday ?? 0) / 8000.0,
+                  icon: Icons.directions_walk,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StepsPage())),
+                ),
+                _HealthGridCard(
+                  title: '수면',
+                  value: d.sleepYesterday != null ? '${d.sleepYesterday!.inHours}시간 ${d.sleepYesterday!.inMinutes % 60}분' : '기록 없음',
+                  unit: null, // 수면은 단위가 섞여 있어 그대로 둠
+                  status: (d.sleepYesterday?.inHours ?? 0) >= 6 ? _Status.good : _Status.warn,
+                  statusLabel: d.sleepYesterday != null ? ((d.sleepYesterday!.inHours >= 6) ? '충분함' : '부족함') : null,
+                  progress: (d.sleepYesterday?.inMinutes ?? 0) / 480.0,
+                  icon: Icons.bedtime,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SleepDetailPage())),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+
+            // 3. 주요 바이탈
+            _SectionHeader('주요 바이탈'),
+            GridView.count(
+              crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
+              childAspectRatio: 1.1, mainAxisSpacing: 12, crossAxisSpacing: 12,
+              children: [
+                _HealthGridCard(
+                  title: '심박수',
+                  value: hrVal != null ? '${hrVal.round()}' : '기록 없음',
+                  unit: hrVal != null ? 'bpm' : null, // ✅ 단위 분리
+                  status: hrInfo.status,
+                  statusLabel: hrInfo.label,
+                  progress: hrVal != null ? (hrVal / 150) : 0.0,
+                  icon: Icons.monitor_heart,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HeartRateDetailPage())),
+                ),
+                _HealthGridCard(
+                  title: '체중',
+                  value: weightVal != null ? weightVal.toStringAsFixed(1) : '기록 없음',
+                  unit: weightVal != null ? 'kg' : null, // ✅ 단위 분리
+                  status: weightInfo.status,
+                  statusLabel: weightInfo.label,
+                  icon: Icons.monitor_weight_outlined,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InBodyPage())),
+                ),
+                _HealthGridCard(
+                  title: '혈압',
+                  value: (sys != null) ? '$sys/$dia' : '기록 없음',
+                  unit: (sys != null) ? 'mmHg' : null, // ✅ 단위 분리
+                  status: bpInfo.status,
+                  statusLabel: bpInfo.label,
+                  icon: Icons.favorite_outline,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BloodPressurePage())),
+                ),
+                _HealthGridCard(
+                  title: '혈당',
+                  value: d.glucoseVal != null ? '${d.glucoseVal}' : '기록 없음',
+                  unit: d.glucoseVal != null ? 'mg/dL' : null, // ✅ 단위 분리
+                  status: d.glucoseStatus,
+                  statusLabel: d.glucoseLabel,
+                  progress: null,
+                  icon: Icons.bloodtype_outlined,
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const _WipPage(title: '혈당'))),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+
+            // 4. 정기 검사
+            _SectionHeader('정기 검사'),
+            _HealthListCard(
+              title: '소변검사 (7일 주기)',
+              subtitle: d.urineResultText,
+              status: d.urineStatus,
+              tagText: d.urineTagText,
+              icon: Icons.science_outlined,
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const _WipPage(title: '소변검사 (Licote 연동 예정)'))),
+            ),
+            _HealthListCard(
+              title: '대변검사 (10일 주기)',
+              subtitle: d.fecalResultText,
+              status: d.fecalStatus,
+              tagText: d.fecalTagText,
+              icon: Icons.event_repeat_outlined,
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const FecalOccultBloodPage())),
+            ),
+            const SizedBox(height: 40),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Helper Functions (그대로 유지)
   double? _numVal(dynamic v) {
     if (v == null) return null;
     if (v is num) return v.toDouble();
@@ -81,100 +335,20 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     return null;
   }
 
-  // 최신 데이터 1개 가져오기
   Future<double?> _fetchLatest(HealthDataType type) async {
     try {
       final now = DateTime.now();
+      int days = 30;
+      if (type == HealthDataType.HEART_RATE || type == HealthDataType.BLOOD_GLUCOSE) days = 2;
+
       final data = await health.getHealthDataFromTypes(
-        types: [type],
-        startTime: now.subtract(const Duration(days: 30)),
-        endTime: now,
+          types: [type],
+          startTime: now.subtract(Duration(days: days)),
+          endTime: now
       );
       if (data.isEmpty) return null;
       data.sort((a, b) => b.dateTo.compareTo(a.dateTo));
       return _numVal(data.first.value);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // ✅ 체중(BMI) 상태 분석 (라벨 + 색상상태 반환)
-  ({String label, _Status status}) _analyzeWeightStatus({double? weight, double? heightM, double? directBmi, double? bodyFat}) {
-    if (weight == null) return (label: '기록 없음', status: _Status.warn);
-
-    // 1순위: 체지방률
-    if (bodyFat != null) {
-      if (bodyFat < 18) return (label: '체지방 낮음', status: _Status.warn);
-      if (bodyFat <= 28) return (label: '체지방 표준', status: _Status.good);
-      if (bodyFat <= 35) return (label: '경도 비만', status: _Status.warn);
-      return (label: '비만', status: _Status.bad);
-    }
-
-    // 2순위: BMI
-    double? bmi = directBmi;
-    if (bmi == null && heightM != null && heightM > 0) {
-      bmi = weight / (heightM * heightM);
-    }
-
-    if (bmi == null) return (label: '체중 측정됨', status: _Status.good); // 판단 불가 시 일단 정상 처리
-
-    // BMI 기준 (대한비만학회)
-    if (bmi < 18.5) return (label: '저체중', status: _Status.warn);
-    if (bmi < 23) return (label: '정상', status: _Status.good);
-    if (bmi < 25) return (label: '과체중', status: _Status.warn);
-    return (label: '비만', status: _Status.bad); // 🔴 비만은 빨강
-  }
-
-  // ✅ 혈압 분석
-  ({String label, _Status status}) _analyzeBP(int sys, int dia) {
-    if (sys < 120 && dia < 80) return (label: '정상', status: _Status.good);
-    if (sys < 140 && dia < 90) return (label: '주의', status: _Status.warn); // 전단계
-    return (label: '고혈압', status: _Status.bad); // 🔴 고혈압은 빨강
-  }
-
-  // ✅ 혈당 분석
-  ({String label, _Status status}) _analyzeGlucose(int val) {
-    if (val < 70) return (label: '저혈당', status: _Status.bad);
-    if (val <= 140) return (label: '정상', status: _Status.good);
-    if (val <= 200) return (label: '주의', status: _Status.warn);
-    return (label: '고혈당', status: _Status.bad); // 🔴 고혈당은 빨강
-  }
-
-  // ✅ 심박수 분석
-  ({String label, _Status status}) _analyzeHR(double val) {
-    if (val < 50) return (label: '낮음', status: _Status.warn);
-    if (val <= 90) return (label: '안정', status: _Status.good);
-    if (val <= 110) return (label: '약간 높음', status: _Status.warn);
-    return (label: '높음', status: _Status.bad); // 🔴 높으면 빨강
-  }
-
-  // ✅ 검사 주기 상태 계산
-  ({String tagText, _Status status}) _calcCycleStatus(DateTime? lastDate, int cycleDays) {
-    if (lastDate == null) {
-      return (tagText: '검사 필요', status: _Status.bad); // 🔴 기록 없으면 빨강
-    }
-    final diff = DateTime.now().difference(lastDate).inDays;
-    final remain = cycleDays - diff;
-
-    if (remain < 0) {
-      return (tagText: '검사 필요', status: _Status.bad); // 🔴 기한 지남
-    } else {
-      // 기간 남음: 2일 이내면 주황, 넉넉하면 초록
-      return (tagText: 'D-$remain', status: remain <= 2 ? _Status.warn : _Status.good);
-    }
-  }
-
-  // 공통 헬퍼들
-  Future<int?> _sumSteps(DateTime start, DateTime end) async {
-    try {
-      final agg = await health.getTotalStepsInInterval(start, end);
-      if (agg != null) return agg;
-    } catch (_) {}
-    try {
-      final pts = await health.getHealthDataFromTypes(types: const [HealthDataType.STEPS], startTime: start, endTime: end);
-      double sum = 0;
-      for (final p in pts) { final d = _numVal(p.value); if (d != null) sum += d; }
-      return sum.round();
     } catch (_) { return null; }
   }
 
@@ -206,40 +380,6 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     } catch (_) { return null; }
   }
 
-  Future<int?> _stepsBaselineNDays(int n, DateTime today0) async {
-    int sum = 0, cnt = 0;
-    for (int i = 1; i <= n; i++) {
-      final d0 = today0.subtract(Duration(days: i));
-      final d1 = d0.add(const Duration(days: 1));
-      final s = await _sumSteps(d0, d1);
-      if (s != null) { sum += s; cnt++; }
-    }
-    return cnt == 0 ? null : (sum / cnt).round();
-  }
-
-  Future<Duration?> _sleepBaselineNNights(int n, DateTime today0) async {
-    int sumMin = 0, cnt = 0;
-    for (int i = 2; i <= n + 1; i++) {
-      final anchor = today0.subtract(Duration(days: i - 1));
-      final winStart = anchor.subtract(const Duration(hours: 6));
-      final winEnd = anchor.add(const Duration(hours: 12));
-      final dur = await _sleepTotalInWindow(winStart, winEnd);
-      if (dur != null) { sumMin += dur.inMinutes; cnt++; }
-    }
-    return cnt == 0 ? null : Duration(minutes: (sumMin / cnt).round());
-  }
-
-  int _trendArrowByMetric({required double today, required double baseline, required String metric}) {
-    if (baseline <= 0) return 0;
-    final ratio = (today - baseline) / baseline;
-    switch (metric) {
-      case 'steps': return ratio >= 0.15 ? 1 : (ratio <= -0.15 ? -1 : 0);
-      case 'sleep': return ratio >= 0.10 ? 1 : (ratio <= -0.10 ? -1 : 0);
-      default: return 0;
-    }
-  }
-
-  // 회복 점수 로딩
   Future<rec.RecoveryScore?> _loadTodayRecoveryScore(DateTime today0) async {
     if (!authorized) return null;
     final nights = <rec.NightRecoveryRaw>[];
@@ -277,283 +417,71 @@ class _HealthSummaryPageState extends HealthState<HealthSummaryPage> {
     }
   }
 
-  // PDF & CSV Export
-  Future<void> _openPdfPreview() async {
-    final r = await _currentRange();
-    final exporter = HealthExporter(health);
-    final rows = await exporter.collect(start: r.start, end: r.end, types: types);
-    final pdfBytes = await HealthReportPdf.build(HealthReportData(generatedAt: DateTime.now(), subjectName: '홍길동', rangeLabel: r.label, records: rows));
-    if (!mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => PdfPreview(build: (fmt) async => Uint8List.fromList(pdfBytes), pdfFileName: "health_report.pdf", allowPrinting: true, allowSharing: true, canChangeOrientation: false, canChangePageFormat: false)));
-  }
-
-  Future<void> _exportCsvAndShare() async {
-    final r = await _currentRange();
-    final exporter = HealthExporter(health);
-    final rows = await exporter.collect(start: r.start, end: r.end, types: types);
-    final csv = HealthRecord.toCsv(rows);
-    final dir = await getTemporaryDirectory();
-    final path = '${dir.path}/health_export_${DateTime.now().millisecondsSinceEpoch}.csv';
-    final file = File(path);
-    await file.writeAsString(csv, encoding: utf8);
-    await Share.shareXFiles([XFile(file.path)], text: '${r.label} 헬스 데이터 내보내기 (CSV)');
-  }
-
-  Future<({DateTime start, DateTime end, String label})> _currentRange() async {
-    final now = DateTime.now();
-    final end = DateTime(now.year, now.month, now.day).add(const Duration(days: 1));
-    final start = switch (_range) {
-      SummaryRange.today => end.subtract(const Duration(days: 1)),
-      SummaryRange.week => end.subtract(const Duration(days: 7)),
-      SummaryRange.month => end.subtract(const Duration(days: 30)),
-    };
-    final label = switch (_range) {
-      SummaryRange.today => '오늘',
-      SummaryRange.week => '최근 7일',
-      SummaryRange.month => '최근 30일',
-    };
-    return (start: start, end: end, label: label);
-  }
-
-  // ---------------- Load ----------------
-  Future<void> _load() async {
-    setState(() => _loading = true);
-    try {
-      final now = DateTime.now();
-      final today0 = DateTime(now.year, now.month, now.day);
-      final tomorrow0 = today0.add(const Duration(days: 1));
-
-      int? todaySteps; int? stepsAvg;
-      Duration? sleepLastNight; Duration? sleepAvg;
-
-      rec.RecoveryScore? recovery;
-
-      if (authorized) {
-        // 활동량
-        try {
-          final steps = await health.getTotalStepsInInterval(today0, tomorrow0);
-          todaySteps = steps;
-        } catch (_) {}
-
-        // 수면
-        final sleepEnd = today0.add(const Duration(hours: 12));
-        final sleepStart = today0.subtract(const Duration(hours: 6));
-        sleepLastNight = await _sleepTotalInWindow(sleepStart, sleepEnd);
-
-        if (_range == SummaryRange.today) recovery = await _loadTodayRecoveryScore(today0);
-      }
-
-      // 바이탈 최신 데이터
-      double? hr = await _fetchLatest(HealthDataType.HEART_RATE);
-      double? weight = await _fetchLatest(HealthDataType.WEIGHT);
-      double? height = await _fetchLatest(HealthDataType.HEIGHT);
-      double? bmi = await _fetchLatest(HealthDataType.BODY_MASS_INDEX);
-      double? bodyFat = await _fetchLatest(HealthDataType.BODY_FAT_PERCENTAGE);
-
-      double? bpSys = await _fetchLatest(HealthDataType.BLOOD_PRESSURE_SYSTOLIC);
-      double? bpDia = await _fetchLatest(HealthDataType.BLOOD_PRESSURE_DIASTOLIC);
-      double? glucose = await _fetchLatest(HealthDataType.BLOOD_GLUCOSE);
-
-      // 분석 결과 (라벨 + 상태색상)
-      final weightInfo = _analyzeWeightStatus(weight: weight, heightM: height, directBmi: bmi, bodyFat: bodyFat);
-      final bpInfo = (bpSys != null && bpDia != null) ? _analyzeBP(bpSys.toInt(), bpDia.toInt()) : (label: '기록 없음', status: _Status.warn);
-      final glucoseInfo = glucose != null ? _analyzeGlucose(glucose.toInt()) : (label: '기록 없음', status: _Status.warn);
-      final hrInfo = hr != null ? _analyzeHR(hr) : (label: '기록 없음', status: _Status.warn);
-
-      // 검사 주기
-      final fecalStore = FecalLocalStore();
-      final fecalHistory = await fecalStore.loadHistory();
-      final fecalLast = fecalHistory.isNotEmpty ? fecalHistory.first : null;
-      final fecalCycle = _calcCycleStatus(fecalLast?.date, 10);
-
-      // ✅ [대변검사] 잠혈 의심이면 빨강(bad)으로 강제 변경
-      _Status finalFecalStatus = fecalCycle.status;
-      if (fecalLast?.result == FecalResult.suspect) {
-        finalFecalStatus = _Status.bad; // 🔴 잠혈 의심
-      }
-
-      final prefs = await SharedPreferences.getInstance();
-      final urineStr = prefs.getString('urine_last_date');
-      final urineDate = urineStr != null ? DateTime.tryParse(urineStr) : null;
-      final urineResultStr = prefs.getString('urine_last_result') ?? '기록 없음';
-      final urineCycle = _calcCycleStatus(urineDate, 7);
-
-      _data = _SummaryModel(
-        recoveryScore: recovery?.score,
-        recoveryLabel: recovery?.label,
-        recoveryLowConfidence: recovery?.lowConfidence,
-
-        stepsToday: todaySteps,
-        sleepYesterday: sleepLastNight,
-
-        hrVal: hr, hrStatus: hrInfo.status, hrLabel: hrInfo.label,
-        weightVal: weight, weightStatus: weightInfo.status, weightLabel: weightInfo.label,
-
-        bpSys: bpSys?.toInt(), bpDia: bpDia?.toInt(),
-        bpStatus: (bpSys != null) ? bpInfo.status : _Status.warn,
-        bpLabel: (bpSys != null) ? bpInfo.label : null,
-
-        glucoseVal: glucose?.toInt(),
-        glucoseStatus: (glucose != null) ? glucoseInfo.status : _Status.warn,
-        glucoseLabel: (glucose != null) ? glucoseInfo.label : null,
-
-        fecalLastDate: fecalLast?.date,
-        fecalResultText: fecalLast?.result == FecalResult.suspect ? '잠혈 의심' : (fecalLast == null ? '기록 없음' : '잠혈 없음'),
-        fecalTagText: fecalCycle.tagText,
-        fecalStatus: finalFecalStatus, // ✅ 잠혈 의심 반영됨
-
-        urineLastDate: urineDate,
-        urineResultText: urineDate == null ? '기록 없음' : urineResultStr,
-        urineTagText: urineCycle.tagText,
-        urineStatus: urineCycle.status,
-      );
-
-    } finally {
-      if (mounted) setState(() => _loading = false);
+  ({String label, _Status status}) _analyzeWeightStatus({double? weight, double? heightM, double? directBmi, double? bodyFat}) {
+    if (weight == null) return (label: '기록 없음', status: _Status.warn);
+    if (bodyFat != null && bodyFat > 0) {
+      if (bodyFat < 18) return (label: '체지방 낮음', status: _Status.warn);
+      if (bodyFat <= 28) return (label: '체지방 표준', status: _Status.good);
+      if (bodyFat <= 35) return (label: '경도 비만', status: _Status.warn);
+      return (label: '비만', status: _Status.bad);
     }
+    double? bmi = directBmi;
+    if (bmi == null && heightM != null && heightM > 0) bmi = weight / (heightM * heightM);
+    if (bmi == null) return (label: '체중 측정됨', status: _Status.good);
+    if (bmi < 18.5) return (label: '저체중', status: _Status.warn);
+    if (bmi < 23) return (label: '정상', status: _Status.good);
+    if (bmi < 25) return (label: '과체중', status: _Status.warn);
+    return (label: '비만', status: _Status.bad);
   }
 
-  // ---------------- UI ----------------
-  @override
-  Widget build(BuildContext context) {
-    if (_loading || _data == null) return Scaffold(backgroundColor: const Color(0xFFF0F2F5), appBar: AppBar(title: const Text('건강 요약')), body: const Center(child: CircularProgressIndicator()));
-
-    final d = _data!;
-
-    return Scaffold(
-      backgroundColor: const Color(0xFFF0F2F5),
-      appBar: AppBar(
-        title: const Text('건강 요약', style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 22)),
-        backgroundColor: const Color(0xFFF0F2F5), elevation: 0, iconTheme: const IconThemeData(color: Colors.black87),
-        actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _load)],
-      ),
-      body: RefreshIndicator(
-        onRefresh: _load,
-        child: ListView(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          children: [
-            // 1. 회복 점수
-            _SectionHeader('오늘 회복 상태'),
-            _RecoveryCard(
-              score: d.recoveryScore,
-              label: _recoveryLabelText(d.recoveryLabel),
-              status: _recoveryLabelToStatus(d.recoveryLabel),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StressRecoveryPage())),
-            ),
-            const SizedBox(height: 24),
-
-            // 2. 활동 및 수면
-            _SectionHeader('활동 및 수면'),
-            GridView.count(
-              crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
-              childAspectRatio: 1.1, mainAxisSpacing: 12, crossAxisSpacing: 12,
-              children: [
-                _HealthGridCard(
-                  title: '활동량',
-                  subtitle: d.stepsToday != null ? '${NumberFormat('#,###').format(d.stepsToday)} 걸음' : '기록 없음',
-                  status: (d.stepsToday ?? 0) >= 5000 ? _Status.good : _Status.warn,
-                  statusLabel: d.stepsToday != null ? ((d.stepsToday! >= 5000) ? '목표 달성' : '운동 필요') : null,
-                  progress: (d.stepsToday ?? 0) / 8000.0,
-                  icon: Icons.directions_walk,
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StepsPage())),
-                ),
-                _HealthGridCard(
-                  title: '수면',
-                  subtitle: d.sleepYesterday != null ? '${d.sleepYesterday!.inHours}시간 ${d.sleepYesterday!.inMinutes % 60}분' : '기록 없음',
-                  status: (d.sleepYesterday?.inHours ?? 0) >= 6 ? _Status.good : _Status.warn,
-                  statusLabel: d.sleepYesterday != null ? ((d.sleepYesterday!.inHours >= 6) ? '충분함' : '부족함') : null,
-                  progress: (d.sleepYesterday?.inMinutes ?? 0) / 480.0,
-                  icon: Icons.bedtime,
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SleepDetailPage())),
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-
-            // 3. 주요 바이탈
-            _SectionHeader('주요 바이탈'),
-            GridView.count(
-              crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
-              childAspectRatio: 1.1, mainAxisSpacing: 12, crossAxisSpacing: 12,
-              children: [
-                // 심박수
-                _HealthGridCard(
-                  title: '심박수',
-                  subtitle: d.hrVal != null ? '${d.hrVal!.round()} bpm' : '기록 없음',
-                  status: d.hrStatus, // ✅ 적용됨
-                  statusLabel: d.hrLabel,
-                  progress: d.hrVal != null ? (d.hrVal! / 150) : 0.0,
-                  icon: Icons.monitor_heart,
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HeartRateDetailPage())),
-                ),
-                // 체중
-                _HealthGridCard(
-                  title: '체중',
-                  subtitle: d.weightVal != null ? '${d.weightVal!.toStringAsFixed(1)} kg' : '기록 없음',
-                  status: d.weightStatus, // ✅ 적용됨 (비만=빨강)
-                  statusLabel: d.weightLabel,
-                  icon: Icons.monitor_weight_outlined,
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InBodyPage())),
-                ),
-                // 혈압
-                _HealthGridCard(
-                  title: '혈압',
-                  subtitle: (d.bpSys != null) ? '${d.bpSys}/${d.bpDia}' : '기록 없음',
-                  status: d.bpStatus, // ✅ 적용됨 (고혈압=빨강)
-                  statusLabel: d.bpLabel,
-                  icon: Icons.favorite_outline,
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const _WipPage(title: '혈압'))),
-                ),
-                // 혈당
-                _HealthGridCard(
-                  title: '혈당',
-                  subtitle: d.glucoseVal != null ? '${d.glucoseVal} mg/dL' : '기록 없음',
-                  status: d.glucoseStatus, // ✅ 적용됨
-                  statusLabel: d.glucoseLabel,
-                  progress: null,
-                  icon: Icons.bloodtype_outlined,
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const _WipPage(title: '혈당'))),
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-
-            // 4. 정기 검사
-            _SectionHeader('정기 검사'),
-            _HealthListCard(
-              title: '소변검사 (7일 주기)',
-              subtitle: d.urineResultText,
-              status: d.urineStatus,
-              tagText: d.urineTagText,
-              icon: Icons.science_outlined,
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const _WipPage(title: '소변검사 (Licote 연동 예정)'))),
-            ),
-            _HealthListCard(
-              title: '대변검사 (10일 주기)',
-              subtitle: d.fecalResultText,
-              status: d.fecalStatus, // ✅ 적용됨 (잠혈의심=빨강)
-              tagText: d.fecalTagText,
-              icon: Icons.event_repeat_outlined,
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const FecalOccultBloodPage())),
-            ),
-            const SizedBox(height: 40),
-          ],
-        ),
-      ),
-    );
+  ({String label, _Status status}) _analyzeBP(int sys, int dia) {
+    if (sys < 120 && dia < 80) return (label: '정상', status: _Status.good);
+    if (sys < 140 && dia < 90) return (label: '주의', status: _Status.warn);
+    return (label: '고혈압', status: _Status.bad);
   }
 
-  static String _fmtSteps(int v) => NumberFormat('#,###').format(v);
-  static String _fmtDur(Duration d) {
-    final h = d.inMinutes ~/ 60;
-    final m = d.inMinutes % 60;
-    return '${h}시간 ${m}분';
+  ({String label, _Status status}) _analyzeGlucose(int val) {
+    if (val < 70) return (label: '저혈당', status: _Status.bad);
+    if (val <= 140) return (label: '정상', status: _Status.good);
+    if (val <= 200) return (label: '주의', status: _Status.warn);
+    return (label: '고혈당', status: _Status.bad);
+  }
+
+  ({String label, _Status status}) _analyzeHR(double val) {
+    if (val < 50) return (label: '낮음', status: _Status.warn);
+    if (val <= 90) return (label: '안정', status: _Status.good);
+    if (val <= 110) return (label: '약간 높음', status: _Status.warn);
+    return (label: '높음', status: _Status.bad);
+  }
+
+  ({String tagText, _Status status}) _calcCycleStatus(DateTime? lastDate, int cycleDays) {
+    if (lastDate == null) return (tagText: '검사 필요', status: _Status.bad);
+    final diff = DateTime.now().difference(lastDate).inDays;
+    final remain = cycleDays - diff;
+    if (remain < 0) return (tagText: '검사 필요', status: _Status.bad);
+    return (tagText: 'D-$remain', status: remain <= 2 ? _Status.warn : _Status.good);
   }
 }
 
-enum _Status { good, warn, bad }
+class _SummaryModel {
+  final int? recoveryScore; final rec.RecoveryLabel? recoveryLabel; final bool? recoveryLowConfidence;
+  final int? stepsToday; final Duration? sleepYesterday;
+  final int? glucoseVal; final _Status glucoseStatus; final String? glucoseLabel;
+  final DateTime? urineLastDate; final String urineResultText; final String urineTagText; final _Status urineStatus;
+  final DateTime? fecalLastDate; final String fecalResultText; final String fecalTagText; final _Status fecalStatus;
+
+  const _SummaryModel({
+    required this.recoveryScore, required this.recoveryLabel, required this.recoveryLowConfidence,
+    required this.stepsToday, required this.sleepYesterday,
+    required this.glucoseVal, required this.glucoseStatus, required this.glucoseLabel,
+    required this.urineLastDate, required this.urineResultText, required this.urineTagText, required this.urineStatus,
+    required this.fecalLastDate, required this.fecalResultText, required this.fecalTagText, required this.fecalStatus,
+  });
+}
 
 // ---------------- UI Widgets ----------------
+enum _Status { good, warn, bad }
+Color _statusColor(_Status s) => switch (s) { _Status.good => Colors.green, _Status.warn => Colors.orange, _Status.bad => Colors.redAccent };
 
 class _SectionHeader extends StatelessWidget {
   final String text; const _SectionHeader(this.text, {super.key});
@@ -566,27 +494,31 @@ class _RecoveryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = _statusColor(status);
-    return InkWell(
-      onTap: onTap, borderRadius: BorderRadius.circular(24),
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(24), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 12, offset: const Offset(0, 6))]),
-        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [Icon(Icons.bolt, color: color, size: 24), const SizedBox(width: 8), Text('회복 점수', style: TextStyle(fontSize: 16, color: Colors.grey[700], fontWeight: FontWeight.w600))]),
-            const SizedBox(height: 8),
-            Text(score != null ? '$score' : '-', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w800, color: Colors.black87, height: 1.0)),
-          ]),
-          Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(12)), child: Text(label, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)))
-        ]),
-      ),
-    );
+    return InkWell(onTap: onTap, borderRadius: BorderRadius.circular(24), child: Container(padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(24), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 12, offset: const Offset(0, 6))]), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(children: [Icon(Icons.bolt, color: color, size: 24), const SizedBox(width: 8), Text('회복 점수', style: TextStyle(fontSize: 16, color: Colors.grey[700], fontWeight: FontWeight.w600))]), const SizedBox(height: 8), Text(score != null ? '$score' : '-', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w800, color: Colors.black87, height: 1.0))]), Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(12)), child: Text(label, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)))])));
   }
 }
 
+// ✅ [수정] GridCard도 값(Value)과 단위(Unit)를 분리하여 표시
 class _HealthGridCard extends StatelessWidget {
-  final String title; final String subtitle; final _Status status; final String? statusLabel; final double? progress; final IconData icon; final VoidCallback? onTap;
-  const _HealthGridCard({required this.title, required this.subtitle, required this.status, this.statusLabel, this.progress, required this.icon, required this.onTap});
+  final String title;
+  final String value; // 수정: 전체 문자열 대신 값만 받음
+  final String? unit; // 추가: 단위
+  final _Status status;
+  final String? statusLabel;
+  final double? progress;
+  final IconData icon;
+  final VoidCallback? onTap;
+
+  const _HealthGridCard({
+    required this.title,
+    required this.value,
+    this.unit,
+    required this.status,
+    this.statusLabel,
+    this.progress,
+    required this.icon,
+    required this.onTap
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -599,7 +531,18 @@ class _HealthGridCard extends StatelessWidget {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           Row(children: [Icon(icon, size: 20, color: color), const SizedBox(width: 8), Flexible(child: Text(title, style: TextStyle(fontSize: 15, color: Colors.grey[700], fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis))]),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(subtitle, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.black87)),
+            // ✅ 값과 단위를 분리해서 표시 (값은 크고 진하게, 단위는 작게)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: Colors.black87)),
+                if (unit != null) ...[
+                  const SizedBox(width: 4),
+                  Text(unit!, style: TextStyle(fontSize: 14, color: Colors.grey[600], fontWeight: FontWeight.w600)),
+                ]
+              ],
+            ),
             const SizedBox(height: 8),
             if (statusLabel != null)
               Row(children: [
@@ -619,43 +562,11 @@ class _HealthGridCard extends StatelessWidget {
 class _HealthListCard extends StatelessWidget {
   final String title; final String subtitle; final _Status status; final String? tagText; final IconData icon; final VoidCallback? onTap;
   const _HealthListCard({required this.title, required this.subtitle, required this.status, this.tagText, required this.icon, required this.onTap});
-
   @override
   Widget build(BuildContext context) {
     final color = _statusColor(status);
-    return Padding(padding: const EdgeInsets.only(bottom: 12), child: InkWell(onTap: onTap, borderRadius: BorderRadius.circular(16), child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8, offset: const Offset(0, 2))]), child: Row(children: [
-      Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle), child: Icon(icon, size: 22, color: color)),
-      const SizedBox(width: 16),
-      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(fontSize: 14, color: Colors.grey, fontWeight: FontWeight.bold)), const SizedBox(height: 2), Text(subtitle, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black87))])),
-      if (tagText != null) Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(8)), child: Text(tagText!, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)))
-    ]))));
+    return Padding(padding: const EdgeInsets.only(bottom: 12), child: InkWell(onTap: onTap, borderRadius: BorderRadius.circular(16), child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8, offset: const Offset(0, 2))]), child: Row(children: [Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle), child: Icon(icon, size: 22, color: color)), const SizedBox(width: 16), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(fontSize: 14, color: Colors.grey, fontWeight: FontWeight.bold)), const SizedBox(height: 2), Text(subtitle, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black87))])), if (tagText != null) Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(8)), child: Text(tagText!, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)))]))));
   }
-}
-
-Color _statusColor(_Status s) => switch (s) { _Status.good => Colors.green, _Status.warn => Colors.orange, _Status.bad => Colors.redAccent };
-
-class _SummaryModel {
-  final int? recoveryScore; final rec.RecoveryLabel? recoveryLabel; final bool? recoveryLowConfidence;
-  final int? stepsToday; final Duration? sleepYesterday;
-
-  final double? hrVal; final _Status hrStatus; final String? hrLabel;
-  final double? weightVal; final _Status weightStatus; final String weightLabel;
-  final int? bpSys; final int? bpDia; final _Status bpStatus; final String? bpLabel;
-  final int? glucoseVal; final _Status glucoseStatus; final String? glucoseLabel;
-
-  final DateTime? urineLastDate; final String urineResultText; final String urineTagText; final _Status urineStatus;
-  final DateTime? fecalLastDate; final String fecalResultText; final String fecalTagText; final _Status fecalStatus;
-
-  const _SummaryModel({
-    required this.recoveryScore, required this.recoveryLabel, required this.recoveryLowConfidence,
-    required this.stepsToday, required this.sleepYesterday,
-    required this.hrVal, required this.hrStatus, required this.hrLabel,
-    required this.weightVal, required this.weightStatus, required this.weightLabel,
-    required this.bpSys, required this.bpDia, required this.bpStatus, required this.bpLabel,
-    required this.glucoseVal, required this.glucoseStatus, required this.glucoseLabel,
-    required this.urineLastDate, required this.urineResultText, required this.urineTagText, required this.urineStatus,
-    required this.fecalLastDate, required this.fecalResultText, required this.fecalTagText, required this.fecalStatus,
-  });
 }
 
 class _WipPage extends StatelessWidget {

@@ -1,3 +1,5 @@
+// lib/pages/inbody_page.dart
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../data/iot/device_control_controller.dart';
@@ -24,15 +26,16 @@ class _InBodyPageState extends State<InBodyPage> {
 
   void _initController() {
     try {
-      // 1. HA 연결 초기화
+      // 1. HA 연결 초기화 (싱글톤이 아닌 경우 매번 생성)
       final api = HomeAssistantApi(options: HomeAssistantOptions.fromEnv());
       final repo = IotRepository(api);
       _controller = DeviceControlController(repo);
 
       // 2. 리스너 등록 및 데이터 로드
       _controller.addListener(_onUpdate);
-      _controller.init();
-      setState(() => _isInit = true);
+      _controller.init().then((_) {
+        if (mounted) setState(() => _isInit = true);
+      });
     } catch (e) {
       debugPrint("InBody Controller Init Error: $e");
     }
@@ -45,26 +48,30 @@ class _InBodyPageState extends State<InBodyPage> {
   @override
   void dispose() {
     if (_isInit) _controller.removeListener(_onUpdate);
+    // _controller.dispose(); // 필요 시 주석 해제 (단, Repo 공유 여부에 따라 주의)
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!_isInit) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    // 초기 로딩 중일 때
+    if (!_isInit && _controller.status == IotStatus.idle) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
 
     final snap = _controller.snapshot;
     final isLoading = _controller.status == IotStatus.loading;
 
-    // 데이터가 0보다 크면 데이터가 있는 것으로 간주
+    // 데이터 존재 여부 확인 (체중이 0보다 크면 데이터가 있다고 가정)
     final hasData = snap.inbodyWeight > 0;
 
-    // 타임스탬프는 현재 갱신 시점 기준 (HA에 저장된 날짜를 가져오려면 모델에 String 필드 추가 필요)
+    // 날짜 표시 (HA 데이터에 타임스탬프가 없으므로 '최근 데이터'로 표시하거나 현재 시간)
     final dateStr = hasData
         ? DateFormat('M월 d일 (E) 확인', 'ko').format(DateTime.now())
-        : '최근 기록 없음';
+        : '데이터 없음';
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FA), // 기존 배경색 유지
+      backgroundColor: const Color(0xFFF5F7FA),
       appBar: AppBar(
         title: const Text('체성분 상세 분석', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
         backgroundColor: const Color(0xFFF5F7FA),
@@ -86,6 +93,7 @@ class _InBodyPageState extends State<InBodyPage> {
           : RefreshIndicator(
         onRefresh: () async => await _controller.init(),
         child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -99,11 +107,11 @@ class _InBodyPageState extends State<InBodyPage> {
               ),
               const SizedBox(height: 20),
 
-              // 2. 메인 체중 카드 (기존 디자인 유지)
+              // 2. 메인 체중 카드
               _WeightBigCard(weight: snap.inbodyWeight),
               const SizedBox(height: 24),
 
-              // 3. [NEW] 신체 구성 (골격근 vs 체지방량 비교)
+              // 3. 신체 구성 (골격근 vs 체지방량)
               const _SectionTitle('신체 구성'),
               _BodyCompCard(
                 muscle: snap.inbodyMuscle,
@@ -160,13 +168,14 @@ class _InBodyPageState extends State<InBodyPage> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        "Home Assistant를 통해 InBody H30NWi 데이터를 실시간으로 동기화합니다.",
+                        "데이터 출처: Samsung Health / Home Assistant\n(폰에서 측정 시 자동 동기화됩니다)",
                         style: TextStyle(fontSize: 13, color: Colors.grey[700], height: 1.4),
                       ),
                     ),
                   ],
                 ),
-              )
+              ),
+              const SizedBox(height: 20),
             ],
           ),
         ),
@@ -183,7 +192,7 @@ class _InBodyPageState extends State<InBodyPage> {
           const SizedBox(height: 16),
           Text("데이터가 없습니다.", style: TextStyle(fontSize: 18, color: Colors.grey[600], fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          const Text("인바디 측정 후 새로고침 해주세요.", style: TextStyle(color: Colors.grey)),
+          const Text("삼성 헬스/인바디 앱 데이터 동기화 대기 중", style: TextStyle(color: Colors.grey)),
           const SizedBox(height: 20),
           ElevatedButton(
             onPressed: () => _controller.init(),
@@ -207,7 +216,7 @@ class _SectionTitle extends StatelessWidget {
   );
 }
 
-// 1. 대형 체중 카드 (기존 디자인 활용)
+// 1. 대형 체중 카드
 class _WeightBigCard extends StatelessWidget {
   final double weight;
   const _WeightBigCard({required this.weight});
@@ -262,11 +271,13 @@ class _BodyCompCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          _buildBar("골격근량", muscle, 50.0, Colors.indigoAccent, Icons.fitness_center), // Max 50kg 기준
+          // 골격근량 (최대 50kg 기준 시각화)
+          _buildBar("골격근량", muscle, 50.0, Colors.indigoAccent, Icons.fitness_center),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 12),
             child: Divider(height: 1),
           ),
+          // 체지방량 (최대 50kg 기준 시각화)
           _buildBar("체지방량", fat, 50.0, Colors.orangeAccent, Icons.opacity),
         ],
       ),
@@ -373,17 +384,17 @@ class _ObesityCard extends StatelessWidget {
   }
 
   Color _getPbfColor(double v) {
-    if (v < 10) return Colors.blue;
-    if (v < 20) return Colors.green;
-    if (v < 28) return Colors.orange;
-    return Colors.red;
+    if (v < 10) return Colors.blue;    // 낮음
+    if (v < 20) return Colors.green;   // 정상
+    if (v < 28) return Colors.orange;  // 경도비만
+    return Colors.red;                 // 비만
   }
 
   Color _getBmiColor(double v) {
-    if (v < 18.5) return Colors.blue;
-    if (v < 23) return Colors.green;
-    if (v < 25) return Colors.orange;
-    return Colors.red;
+    if (v < 18.5) return Colors.blue;  // 저체중
+    if (v < 23) return Colors.green;   // 정상
+    if (v < 25) return Colors.orange;  // 과체중
+    return Colors.red;                 // 비만
   }
 }
 
