@@ -1,6 +1,5 @@
 // lib/data/iot/iot_repository.dart
 
-import 'package:health/health.dart'; // Health 패키지 필요할 경우 유지
 import 'home_assistant_api.dart';
 import 'models.dart';
 
@@ -11,34 +10,30 @@ class IotRepository {
   IotRepository(this._api);
 
   Future<IotSnapshot> load() async {
-    // 1. 전체 상태 미리 로딩 (속도 최적화)
+    // ✅ [속도 최적화] 여기서 모든 데이터를 한 번에 당겨옵니다!
+    // 이후의 fetch 호출들은 0ms에 가깝게 처리됩니다.
     await _api.preloadAllStates();
 
-    // 2. 데이터 가져오기
+    // 2. 데이터 가져오기 (캐시에서 즉시 로딩)
     final results = await Future.wait([
       _api.fetchAirconState(_api.options.livingAcEntityId),
       _api.fetchAirconState(_api.options.bedroomAcEntityId),
       _api.fetchHrvState(_api.options.hrvEntityId ?? ''),
       _api.fetchAdminSettings(),
       _api.fetchInbodyData(),
-      _api.fetchAirMonitorData(), // ✅ [5]번: 에어모니터 데이터
+      _api.fetchAirMonitorData(),
     ]);
 
-    // ✅ [수정] livingAc를 var로 선언 (덮어쓰기 위해)
     var livingAc = results[0] as AirconState;
     final bedroomAc = results[1] as AirconState;
     final hrv = results[2] as HrvState;
     final admin = results[3] as AdminSettings;
-
-    // 폰 데이터
     final inbody = results[4] as Map<String, double>;
-
-    // 에어모니터 데이터
     final airData = results[5] as Map<String, dynamic>;
+
+    // 에어컨 온습도 교체 (에어모니터 데이터 사용)
     final double airTemp = airData['temp'];
     final double airHum = airData['hum'];
-
-    // ✅ [핵심] 거실 에어컨의 온습도를 에어모니터 값으로 교체
     if (airTemp > 0 || airHum > 0) {
       livingAc = livingAc.copyWith(
         currentTemperature: airTemp > 0 ? airTemp : livingAc.currentTemperature,
@@ -64,7 +59,7 @@ class IotRepository {
       inbodyPBF:    inbody['pbf'],
       inbodyVFL:    inbody['vfl'],
 
-      // ✅ 공기질 데이터 저장 (이제 에러 안 남)
+      // 공기질 데이터
       co2: airData['co2'],
       pm1: airData['pm1'],
       pm25: airData['pm25'],
@@ -78,7 +73,7 @@ class IotRepository {
 
   IotSnapshot get snapshot => _cache ?? IotSnapshot.initial();
 
-  // (Control 메서드들 기존 유지 - 생략 없이 그대로 두세요)
+  // (Control 메서드들은 기존과 동일하게 유지 - 생략)
   String _getEntityId(AcLocation loc) { return loc == AcLocation.living ? _api.options.livingAcEntityId : _api.options.bedroomAcEntityId; }
   IotSnapshot _updateCacheAc(AcLocation loc, AirconState newState) { if (loc == AcLocation.living) { return (_cache ?? IotSnapshot.initial()).copyWith(livingAc: newState); } else { return (_cache ?? IotSnapshot.initial()).copyWith(bedroomAc: newState); } }
   Future<void> setAcPower(AcLocation loc, bool on) async { final eid = _getEntityId(loc); await _api.setAirconPower(eid, on); final newState = await _api.fetchAirconState(eid); _cache = _updateCacheAc(loc, newState); }

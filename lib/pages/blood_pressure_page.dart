@@ -1,3 +1,5 @@
+// lib/pages/blood_pressure_page.dart
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -32,7 +34,9 @@ class BloodPressurePage extends StatefulWidget {
 }
 
 class _BloodPressurePageState extends State<BloodPressurePage> {
-  bool _isLoading = true;
+  bool _isLoadingLatest = true; // 현재 상태 로딩 중
+  bool _isLoadingHistory = true; // 과거 기록 로딩 중
+
   List<_BpRecord> _history = [];
   _BpRecord? _latest;
   late final HomeAssistantApi _api;
@@ -40,27 +44,56 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
   @override
   void initState() {
     super.initState();
-    // API 초기화 (옵션 로드)
     final options = HomeAssistantOptions.fromEnv();
     _api = HomeAssistantApi(options: options);
 
-    // 데이터 로드 시작
-    _loadHaHistory();
+    // 1. 현재 데이터 먼저 로딩 (빠름)
+    _loadCurrentData();
+    // 2. 과거 기록 나중에 로딩 (느림)
+    _loadHistoryData();
   }
 
-  Future<void> _loadHaHistory() async {
-    setState(() => _isLoading = true);
-
+  /// ✅ 1단계: 현재 상태만 빠르게 조회
+  Future<void> _loadCurrentData() async {
     try {
-      final prefix = _api.options.healthSensorPrefix; // 예: sensor.sm_s931n_
-      if (prefix.isEmpty) throw Exception("HA_PHONE_PREFIX 설정이 없습니다.");
+      final currentData = await _api.fetchInbodyData(); // 이미 있는 메서드 재활용
 
-      // 1. 센서 이름 조합 (PDF 기반)
+      if (currentData['systolic']! > 0 && currentData['diastolic']! > 0) {
+        final now = DateTime.now();
+        final record = _BpRecord(
+          date: now,
+          sys: currentData['systolic']!.toInt(),
+          dia: currentData['diastolic']!.toInt(),
+          pulse: currentData['pulse']?.toInt(),
+        );
+
+        if (mounted) {
+          setState(() {
+            _latest = record;
+            // 히스토리 로딩 전이라도 일단 리스트에 넣어둠
+            if (_history.isEmpty) _history = [record];
+            _isLoadingLatest = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoadingLatest = false);
+      }
+    } catch (e) {
+      debugPrint("Current BP Load Error: $e");
+      if (mounted) setState(() => _isLoadingLatest = false);
+    }
+  }
+
+  /// ✅ 2단계: 과거 30일치 기록 조회
+  Future<void> _loadHistoryData() async {
+    try {
+      final prefix = _api.options.healthSensorPrefix;
+      if (prefix.isEmpty) return;
+
       final sysId = '${prefix}systolic_blood_pressure';
       final diaId = '${prefix}diastolic_blood_pressure';
       final pulseId = '${prefix}heart_rate';
 
-      // 2. HA에서 기록 가져오기 (30일치)
       final results = await Future.wait([
         _api.fetchHistory(sysId, days: 30),
         _api.fetchHistory(diaId, days: 30),
@@ -71,99 +104,132 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
       final diaLog = results[1];
       final pulseLog = results[2];
 
-      // 3. 데이터 병합 로직 (수축기 시간 기준, 이완기 매칭)
       List<_BpRecord> merged = [];
 
       for (var sItem in sysLog) {
         final stateStr = sItem['state'];
         if (stateStr == 'unavailable' || stateStr == 'unknown') continue;
-
         final sysVal = double.tryParse(stateStr)?.toInt() ?? 0;
         if (sysVal == 0) continue;
 
-        final dateStr = sItem['last_updated']; // UTC 시간
-        final date = DateTime.parse(dateStr).toLocal(); // 로컬 시간 변환
+        final date = DateTime.parse(sItem['last_updated']).toLocal();
 
-        // 같은 시간대(오차 5분)의 이완기 찾기
+        // 매칭 범위 30분으로 넉넉하게 잡음
         final dItem = diaLog.firstWhere((d) {
           final dDate = DateTime.parse(d['last_updated']).toLocal();
-          return dDate.difference(date).inMinutes.abs() < 5;
+          return dDate.difference(date).inMinutes.abs() < 30;
         }, orElse: () => {});
 
-        // 같은 시간대(오차 5분)의 맥박 찾기
         final pItem = pulseLog.firstWhere((p) {
           final pDate = DateTime.parse(p['last_updated']).toLocal();
-          return pDate.difference(date).inMinutes.abs() < 5;
+          return pDate.difference(date).inMinutes.abs() < 30;
         }, orElse: () => {});
 
         if (dItem.isNotEmpty) {
           final diaVal = double.tryParse(dItem['state'])?.toInt() ?? 0;
           final pulseVal = pItem.isNotEmpty ? double.tryParse(pItem['state'])?.toInt() : null;
-
           if (diaVal > 0) {
             merged.add(_BpRecord(date: date, sys: sysVal, dia: diaVal, pulse: pulseVal));
           }
         }
       }
 
-      // 4. 최신순 정렬
+      // 현재 _latest 값이 있다면 중복 체크 후 추가
+      if (_latest != null) {
+        bool exists = merged.any((r) =>
+        r.sys == _latest!.sys && r.dia == _latest!.dia &&
+            r.date.difference(_latest!.date).inMinutes.abs() < 60
+        );
+        if (!exists) merged.add(_latest!);
+      }
+
+      // 최신순 정렬
       merged.sort((a, b) => b.date.compareTo(a.date));
 
       if (mounted) {
         setState(() {
           _history = merged;
-          _latest = merged.isNotEmpty ? merged.first : null;
-          _isLoading = false;
+          if (merged.isNotEmpty) _latest = merged.first; // 최신값 갱신
+          _isLoadingHistory = false;
         });
       }
     } catch (e) {
-      debugPrint("HA History Error: $e");
-      if (mounted) setState(() => _isLoading = false);
+      debugPrint("HA History Load Error: $e");
+      if (mounted) setState(() => _isLoadingHistory = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // 적어도 현재 데이터 로딩은 끝나야 화면을 보여줌
+    // (히스토리는 로딩 중이어도 차트 자리만 비워두고 보여줌)
+    if (_isLoadingLatest) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('혈압 관리'), backgroundColor: const Color(0xFFF5F7FA), elevation: 0),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FA),
       appBar: AppBar(
-        title: const Text('혈압 관리 (HA 연동)', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
+        title: const Text('혈압 관리', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
         backgroundColor: const Color(0xFFF5F7FA),
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.black87),
         actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadHaHistory)
+          IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: () {
+                setState(() { _isLoadingLatest = true; _isLoadingHistory = true; });
+                _loadCurrentData();
+                _loadHistoryData();
+              }
+          )
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _history.isEmpty
-          ? Center(child: Text("기록이 없습니다.\nHA 센서($_api.options.healthSensorPrefix)를 확인하세요.", textAlign: TextAlign.center))
+      body: _latest == null && !_isLoadingHistory
+          ? Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 48, color: Colors.grey),
+            const SizedBox(height: 16),
+            Text("기록이 없습니다.\nHA 센서를 확인하세요.\n(${_api.options.healthSensorPrefix})", textAlign: TextAlign.center, style: const TextStyle(color: Colors.grey)),
+          ],
+        ),
+      )
           : RefreshIndicator(
-        onRefresh: _loadHaHistory,
+        onRefresh: () async {
+          await Future.wait([_loadCurrentData(), _loadHistoryData()]);
+        },
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
+            // 1. 최신 데이터 카드 (가장 먼저 표시)
             if (_latest != null) _buildLatestCard(_latest!),
+
             const SizedBox(height: 24),
             const Text("최근 변화 (30일)", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
-            _buildLineChart(),
+
+            // 2. 그래프 (로딩 중이면 로딩 표시)
+            _isLoadingHistory
+                ? const SizedBox(height: 250, child: Center(child: CircularProgressIndicator()))
+                : _buildLineChart(),
+
             const SizedBox(height: 24),
             const Text("상세 기록", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
-            _buildHistoryList(),
+
+            // 3. 리스트
+            _isLoadingHistory
+                ? const SizedBox(height: 100, child: Center(child: Text("기록 불러오는 중...", style: TextStyle(color: Colors.grey))))
+                : _buildHistoryList(),
           ],
         ),
       ),
     );
   }
-
-  // ... (아래 _buildLatestCard, _buildLineChart, _buildHistoryList UI 코드는 이전과 100% 동일하므로 그대로 사용) ...
-  // (UI 코드가 너무 길면 잘리니, 이전 코드의 UI 부분만 복사해서 붙여넣으시면 됩니다.)
-  // (필요하시면 UI 코드도 다시 적어드릴까요?)
-
-  // ▼▼▼ 이전 코드의 UI 부분 복사 시작 ▼▼▼
 
   Widget _buildLatestCard(_BpRecord record) {
     return Container(
@@ -225,7 +291,7 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
               const Text("맥박", style: TextStyle(fontSize: 16, color: Colors.grey)),
               const SizedBox(width: 8),
               Text(
-                record.pulse != null ? '${record.pulse}' : '-',
+                record.pulse != null && record.pulse! > 0 ? '${record.pulse}' : '-',
                 style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
               ),
               const Text(" bpm", style: TextStyle(fontSize: 12, color: Colors.grey)),
@@ -237,8 +303,10 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
   }
 
   Widget _buildLineChart() {
+    // 차트 데이터가 없으면 빈 공간
+    if (_history.isEmpty) return const SizedBox(height: 250, child: Center(child: Text("차트 데이터 없음")));
+
     final chartData = _history.take(15).toList().reversed.toList();
-    if (chartData.isEmpty) return const SizedBox();
 
     return Container(
       height: 250,
