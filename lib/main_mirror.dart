@@ -1,46 +1,88 @@
-// lib/main_mirror.dart
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:intl/date_symbol_data_local.dart';
 
-// ✅ 미러용 홈 페이지 import (경로 확인해주세요)
-import 'pages/mirror/MIRROR_home_page.dart';
+// ✅ 페이지 Import
+import 'pages/mirror/MIRROR_home_page.dart';           // 1. 홈 (시계)
+import 'pages/mirror/MIRROR_health_summary_page.dart'; // 2. 건강 (미러용)
+import 'pages/device_control_page.dart';               // 3. 제어 (공용)
+import 'pages/emergency_contacts_page.dart';           // 4. 긴급 (공용)
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await initializeDateFormatting('ko_KR', null);
+class MirrorAppShell extends StatefulWidget {
+  const MirrorAppShell({super.key});
 
-  // ✅ [추가] 미러는 '가로 모드'로 고정
-  await SystemChrome.setPreferredOrientations([
-    DeviceOrientation.landscapeLeft,
-    DeviceOrientation.landscapeRight,
-  ]);
-
-  runApp(const MirrorApp());
+  @override
+  State<MirrorAppShell> createState() => _MirrorAppShellState();
 }
 
-class MirrorApp extends StatelessWidget {
-  const MirrorApp({super.key});
+class _MirrorAppShellState extends State<MirrorAppShell> {
+  int _currentIndex = 0;
+
+  // ✅ 탭 페이지 구성 (홈 추가됨)
+  final List<Widget> _pages = const [
+    MirrorHomePage(),          // 0: 홈 (대시보드)
+    MirrorHealthSummaryPage(), // 1: 건강
+    DeviceControlPage(),       // 2: 제어
+    EmergencyContactPage(),    // 3: 긴급
+  ];
+
+  void _onItemTapped(int index) {
+    setState(() {
+      _currentIndex = index;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Smart Mirror',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        fontFamily: 'Pretendard', // 폰트가 있다면 유지
-        // ✅ 미러는 무조건 '다크 모드' (검정 배경)
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: Colors.black,
-        appBarTheme: const AppBarTheme(
+    return Scaffold(
+      backgroundColor: Colors.black, // 미러 배경 검정
+
+      // 페이지 표시 영역
+      body: IndexedStack(
+        index: _currentIndex,
+        children: _pages,
+      ),
+
+      // ✅ 하단 탭바
+      bottomNavigationBar: Theme(
+        data: Theme.of(context).copyWith(
+          canvasColor: Colors.black, // 탭바 배경 검정
+        ),
+        child: BottomNavigationBar(
+          currentIndex: _currentIndex,
+          onTap: _onItemTapped,
           backgroundColor: Colors.black,
-          foregroundColor: Colors.white,
-          elevation: 0,
+          selectedItemColor: Colors.white, // 선택된 아이콘 흰색
+          unselectedItemColor: Colors.grey, // 선택 안 된 아이콘 회색
+          type: BottomNavigationBarType.fixed, // 4개 이상이므로 fixed 필수
+          showSelectedLabels: true,
+          showUnselectedLabels: true,
+          items: const [
+            // 1. 홈
+            BottomNavigationBarItem(
+              icon: Icon(Icons.home_outlined),
+              activeIcon: Icon(Icons.home),
+              label: '홈',
+            ),
+            // 2. 건강
+            BottomNavigationBarItem(
+              icon: Icon(Icons.health_and_safety_outlined),
+              activeIcon: Icon(Icons.health_and_safety),
+              label: '건강',
+            ),
+            // 3. 제어
+            BottomNavigationBarItem(
+              icon: Icon(Icons.devices_other_outlined),
+              activeIcon: Icon(Icons.devices_other),
+              label: '제어',
+            ),
+            // 4. 긴급
+            BottomNavigationBarItem(
+              icon: Icon(Icons.phone_in_talk_outlined),
+              activeIcon: Icon(Icons.phone_in_talk),
+              label: '긴급',
+            ),
+          ],
         ),
       ),
-      // ✅ 미러 홈 페이지로 바로 이동 (AppShell 안 거침)
-      home: const MirrorHomePage(),
     );
   }
 }
