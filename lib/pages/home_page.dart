@@ -12,7 +12,7 @@ import 'package:finalhealthcheck/pages/sleep_detail_page.dart';
 import 'package:finalhealthcheck/pages/heart_rate_detail_page.dart';
 import 'package:finalhealthcheck/pages/steps_page.dart';
 import 'package:finalhealthcheck/pages/stress_recovery_page.dart';
-import 'package:finalhealthcheck/pages/fecal_occult_blood_page.dart';
+import '../mirror_app_shell.dart';  //미러용 쉘 임시 테스트용
 
 // 데이터 및 로직
 import '../controllers/dashboard_controller.dart';
@@ -301,10 +301,40 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       backgroundColor: const Color(0xFFF0F2F5),
       appBar: AppBar(
-        backgroundColor: const Color(0xFFF0F2F5), elevation: 0,
+        backgroundColor: const Color(0xFFF0F2F5),
+        elevation: 0,
         title: const Text("건강 대시보드", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 20)),
         centerTitle: false,
-        actions: const [TopSettingsMenu(), SizedBox(width: 8)],
+        actions: [
+          // 🛠️ [추가] 미러 모드 미리보기 버튼 (모니터 아이콘)
+          IconButton(
+            icon: const Icon(Icons.monitor, color: Colors.black87),
+            tooltip: "미러 모드 실행",
+            onPressed: () {
+              // 미러 앱 쉘로 이동 (강제 다크 테마 적용)
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => Theme(
+                    data: ThemeData(
+                      brightness: Brightness.dark,
+                      scaffoldBackgroundColor: Colors.black,
+                      appBarTheme: const AppBarTheme(
+                        backgroundColor: Colors.black,
+                        foregroundColor: Colors.white,
+                      ),
+                      canvasColor: Colors.black, // 탭바 배경
+                    ),
+                    child: const MirrorAppShell(),
+                  ),
+                ),
+              );
+            },
+          ),
+          // 기존 설정 메뉴
+          const TopSettingsMenu(),
+          const SizedBox(width: 8)
+        ],
         bottom: loading ? const PreferredSize(preferredSize: Size.fromHeight(4), child: LinearProgressIndicator(minHeight: 4)) : null,
       ),
       body: RefreshIndicator(
