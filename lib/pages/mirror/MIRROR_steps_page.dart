@@ -1,173 +1,281 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
+
+// API and Settings
 import '../../data/iot/home_assistant_api.dart';
 import '../../data/iot/home_assistant_options.dart';
 
 class MirrorStepsPage extends StatefulWidget {
   const MirrorStepsPage({super.key});
+
   @override
   State<MirrorStepsPage> createState() => _MirrorStepsPageState();
 }
 
 class _MirrorStepsPageState extends State<MirrorStepsPage> {
   late final HomeAssistantApi _api;
+
+  // Data
+  Map<String, int> dailySteps = {};
+  List<MapEntry<String, int>> sortedDays = [];
   bool isLoadingData = true;
 
-  // 데이터 변수
+  // Today's Metrics
   int todaysSteps = 0;
-  double dist = 0;
-  int cal = 0;
-  int min = 0;
+  double todaysDistanceKm = 0.0;
+  int todaysActivityMinutes = 0;
+  int todaysCalories = 0;
 
-  List<MapEntry<String, int>> sortedDays = [];
+  // Comparison Data
+  int yesterdaySteps = 0;
+  int avgSteps7 = 0;
+
+  // Chart Data
+  List<BarChartGroupData> barGroups = [];
+  List<String> dateLabelsForChart = [];
 
   @override
   void initState() {
     super.initState();
-    _api = HomeAssistantApi(options: HomeAssistantOptions.fromEnv());
-    _loadHaStepsData();
+    _initAndLoad();
   }
 
-  Future<void> _loadHaStepsData() async {
-    setState(() => isLoadingData = true);
+  // ---------------- Calculation Logic ----------------
+
+  double _estimateDistanceKm(int steps) => steps * 0.7 / 1000.0;
+  int _estimateActivityMinutes(int steps) => steps <= 0 ? 0 : (steps / 100.0).round();
+  int _estimateCalories(int steps) => (steps * 0.04).round();
+
+  Future<void> _initAndLoad() async {
     try {
-      final prefix = _api.options.healthSensorPrefix; // sensor.sm_s931n_
-      final stepsEntityId = '${prefix}daily_steps';
+      final options = HomeAssistantOptions.fromEnv();
+      _api = HomeAssistantApi(options: options);
 
-      // 1. 현재 값 (가장 중요: 무조건 표시)
-      final currentState = await _api.getState(stepsEntityId);
-      final currentSteps = double.tryParse(currentState.state)?.toInt() ?? 0;
+      final entityId = '${options.healthSensorPrefix}daily_steps';
 
-      // 2. 히스토리 (없어도 괜찮음)
-      Map<String, int> dailyMax = {};
-      try {
-        final history = await _api.fetchHistory(stepsEntityId, days: 7);
-        for (var entry in history) {
-          final val = double.tryParse(entry['state'])?.toInt() ?? 0;
-          final date = DateTime.parse(entry['last_updated']).toLocal();
-          final key = DateFormat('yyyy-MM-dd').format(date);
-          // daily_steps는 누적 센서이므로 그날의 최대값이 최종 걸음수
-          if (val > (dailyMax[key] ?? -1)) dailyMax[key] = val;
-        }
-      } catch (e) {
-        debugPrint("History Fetch Failed: $e");
-      }
+      // 1. Fetch Today's Live Data
+      final state = await _api.getState(entityId);
+      final currentSteps = double.tryParse(state.state)?.toInt() ?? 0;
 
-      // ✅ [안전장치] 히스토리에 오늘 데이터가 없으면 현재 값으로 채움
-      final todayKey = DateFormat('yyyy-MM-dd').format(DateTime.now());
-      if (currentSteps > 0) {
-        dailyMax[todayKey] = currentSteps;
-      }
+      // 2. Fetch Past 7 Days Data
+      final history = await _api.getHistory(entityId, days: 7);
 
-      // 차트용 데이터 만들기
-      sortedDays.clear();
-      final now = DateTime.now();
-      for (int i = 6; i >= 0; i--) {
-        final d = now.subtract(Duration(days: i));
-        final key = DateFormat('yyyy-MM-dd').format(d);
-        // 데이터 없으면 0
-        sortedDays.add(MapEntry(key, dailyMax[key] ?? 0));
-      }
+      // 3. Process Data
+      final processedMap = _processHistoryData(history, currentSteps);
+
+      // 4. Calculate Metrics
+      _calculateMetrics(processedMap, currentSteps);
 
       if (mounted) {
         setState(() {
-          todaysSteps = currentSteps;
-          // 계산 로직
-          dist = currentSteps * 0.7 / 1000;
-          cal = (currentSteps * 0.04).round();
-          min = (currentSteps / 100).round();
           isLoadingData = false;
         });
       }
     } catch (e) {
-      debugPrint("Error: $e");
+      debugPrint("Mirror Steps Load Error: $e");
       if (mounted) setState(() => isLoadingData = false);
     }
   }
 
+  Map<String, int> _processHistoryData(List<Map<String, dynamic>> history, int currentSteps) {
+    Map<String, int> dailyMax = {};
+    final now = DateTime.now();
+    final todayKey = DateFormat('yyyy-MM-dd').format(now);
+
+    for (int i = 6; i >= 0; i--) {
+      final d = now.subtract(Duration(days: i));
+      final key = DateFormat('yyyy-MM-dd').format(d);
+      dailyMax[key] = 0;
+    }
+
+    for (var item in history) {
+      final val = double.tryParse(item['state'] ?? '')?.toInt();
+      final timeStr = item['last_changed'];
+
+      if (val != null && timeStr != null) {
+        final dt = DateTime.parse(timeStr).toLocal();
+        final key = DateFormat('yyyy-MM-dd').format(dt);
+
+        if (dailyMax.containsKey(key)) {
+          if (val > dailyMax[key]!) {
+            dailyMax[key] = val;
+          }
+        }
+      }
+    }
+
+    if ((dailyMax[todayKey] ?? 0) < currentSteps) {
+      dailyMax[todayKey] = currentSteps;
+    }
+
+    return dailyMax;
+  }
+
+  void _calculateMetrics(Map<String, int> map, int current) {
+    final now = DateTime.now();
+    final todayKey = DateFormat('yyyy-MM-dd').format(now);
+    final yesterdayKey = DateFormat('yyyy-MM-dd').format(now.subtract(const Duration(days: 1)));
+
+    dailySteps = map;
+    sortedDays = dailySteps.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
+
+    todaysSteps = current;
+    todaysDistanceKm = _estimateDistanceKm(current);
+    todaysActivityMinutes = _estimateActivityMinutes(current);
+    todaysCalories = _estimateCalories(current);
+
+    yesterdaySteps = dailySteps[yesterdayKey] ?? 0;
+
+    int total = 0;
+    int count = 0;
+    for (var entry in dailySteps.entries) {
+      total += entry.value;
+      count++;
+    }
+    avgSteps7 = count > 0 ? (total / count).round() : 0;
+
+    _prepareBarChartData();
+  }
+
+  void _prepareBarChartData() {
+    barGroups.clear();
+    dateLabelsForChart.clear();
+
+    for (int i = 0; i < sortedDays.length; i++) {
+      final e = sortedDays[i];
+      final steps = e.value.toDouble();
+      final isToday = i == sortedDays.length - 1;
+
+      barGroups.add(
+        BarChartGroupData(
+          x: i,
+          barRods: [
+            BarChartRodData(
+              toY: steps,
+              color: isToday ? const Color(0xFF4CAF50) : const Color(0xFFE0E0E0),
+              width: 22, // ✅ [수정] 바 두께 확대 (18 -> 22)
+              borderRadius: BorderRadius.circular(6),
+              backDrawRodData: BackgroundBarChartRodData(
+                show: true,
+                toY: (avgSteps7 * 1.5).toDouble(),
+                color: Colors.white10,
+              ),
+            ),
+          ],
+        ),
+      );
+
+      final date = DateTime.parse(e.key);
+      const days = ['월', '화', '수', '목', '금', '토', '일'];
+      dateLabelsForChart.add(days[date.weekday - 1]);
+    }
+  }
+
+  // ---------------- UI Building ----------------
+
   @override
   Widget build(BuildContext context) {
+    final nf = NumberFormat('#,###');
+    double progress = avgSteps7 > 0 ? (todaysSteps / avgSteps7).clamp(0.0, 1.0) : 0.0;
+
+    final diff = todaysSteps - yesterdaySteps;
+    String insightText;
+    if (diff > 0) {
+      insightText = "어제보다 ${nf.format(diff)}걸음 더 걸으셨어요! 👏";
+    } else if (diff < 0) {
+      insightText = "어제보다 ${nf.format(diff.abs())}걸음 적네요. 힘내세요! 💪";
+    } else {
+      insightText = "어제와 똑같이 걸으셨네요!";
+    }
+
     return Scaffold(
-      backgroundColor: Colors.black, // ✅ 배경 완전 검정
+      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('활동량 상세', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 24)),
+        title: const Text('걸음 수', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 28)),
         backgroundColor: Colors.black,
         elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
+        iconTheme: const IconThemeData(color: Colors.white, size: 30),
+        actions: [
+          IconButton(
+            icon: isLoadingData
+                ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white))
+                : const Icon(Icons.refresh, size: 30),
+            onPressed: !isLoadingData ? _initAndLoad : null,
+          )
+        ],
       ),
-      body: isLoadingData
-          ? const Center(child: CircularProgressIndicator(color: Colors.white))
-          : Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 30.0, vertical: 20.0),
-        child: Column(
+      body: isLoadingData && dailySteps.isEmpty
+          ? const Center(child: CircularProgressIndicator(color: Colors.orange))
+          : RefreshIndicator(
+        onRefresh: _initAndLoad,
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 20),
           children: [
-            // 1. 메인 원형 그래프 (검정 배경 위에 띄움)
-            _buildCircularIndicator(),
-
+            _buildCircularIndicator(progress, nf),
             const SizedBox(height: 40),
 
-            // 2. 상세 정보 그리드 (흰색 카드)
-            _buildInfoCard(),
-
+            _buildInfoGrid(),
             const SizedBox(height: 30),
 
-            // 3. 주간 차트 (흰색 카드)
-            Expanded(child: _buildWeeklyChartCard()),
+            // 인사이트 카드
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+              decoration: BoxDecoration(
+                color: Colors.blueAccent.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.tips_and_updates, color: Colors.blueAccent, size: 28),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      insightText,
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blueAccent),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 40),
+
+            const Text("최근 7일 트렌드", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
+            const SizedBox(height: 20),
+            _buildWeeklyChart(),
+            const SizedBox(height: 30),
           ],
         ),
       ),
     );
   }
 
-  // 메인 원형 인디케이터 (검정 배경용)
-  Widget _buildCircularIndicator() {
-    double progress = (todaysSteps / 10000).clamp(0.0, 1.0);
+  Widget _buildCircularIndicator(double progress, NumberFormat nf) {
     return Center(
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // 배경 원 (어두운 회색)
           SizedBox(
-            width: 260, height: 260,
-            child: CircularProgressIndicator(
-                value: 1.0,
-                strokeWidth: 20,
-                color: Colors.white10, // 흐릿한 회색
-                strokeCap: StrokeCap.round
-            ),
+            width: 280, height: 280,
+            child: CircularProgressIndicator(value: 1.0, strokeWidth: 22, color: Colors.grey[800], strokeCap: StrokeCap.round),
           ),
-          // 진행 원 (오렌지색)
           SizedBox(
-            width: 260, height: 260,
-            child: CircularProgressIndicator(
-                value: progress,
-                strokeWidth: 20,
-                color: Colors.orangeAccent,
-                backgroundColor: Colors.transparent,
-                strokeCap: StrokeCap.round
-            ),
+            width: 280, height: 280,
+            child: CircularProgressIndicator(value: progress, strokeWidth: 22, color: const Color(0xFF4CAF50), backgroundColor: Colors.transparent, strokeCap: StrokeCap.round),
           ),
-          // 중앙 텍스트
           Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.directions_walk, color: Colors.orangeAccent, size: 36),
+              const Text('오늘 걸음 수', style: TextStyle(fontSize: 18, color: Colors.grey)),
               const SizedBox(height: 8),
-              Text(
-                  NumberFormat('#,###').format(todaysSteps),
-                  style: const TextStyle(fontSize: 56, fontWeight: FontWeight.w900, color: Colors.white, height: 1.0)
-              ),
-              const Text('걸음', style: TextStyle(color: Colors.white54, fontSize: 18)),
+              Text(nf.format(todaysSteps), style: const TextStyle(fontSize: 56, fontWeight: FontWeight.w900, color: Colors.white, height: 1.0)),
               const SizedBox(height: 8),
               Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(12)),
-                  child: Text(
-                      '목표 ${((progress * 100).toInt())}% 달성',
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white)
-                  )
-              )
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                decoration: BoxDecoration(color: Colors.grey[800], borderRadius: BorderRadius.circular(16)),
+                child: Text('목표 ${nf.format(avgSteps7)}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.grey)),
+              ),
             ],
           )
         ],
@@ -175,119 +283,151 @@ class _MirrorStepsPageState extends State<MirrorStepsPage> {
     );
   }
 
-  // 상세 정보 카드 (흰색 배경)
-  Widget _buildInfoCard() {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
-      decoration: BoxDecoration(
-        color: Colors.white, // 흰색 카드
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _InfoItem(label: "활동 시간", value: "$min", unit: "분", icon: Icons.timer, color: Colors.purpleAccent),
-          Container(width: 1, height: 40, color: Colors.grey[300]),
-          _InfoItem(label: "이동 거리", value: dist.toStringAsFixed(1), unit: "km", icon: Icons.place, color: Colors.blueAccent),
-          Container(width: 1, height: 40, color: Colors.grey[300]),
-          _InfoItem(label: "소모 칼로리", value: "$cal", unit: "kcal", icon: Icons.local_fire_department, color: Colors.redAccent),
-        ],
+  Widget _buildInfoGrid() {
+    return Row(
+      children: [
+        _buildInfoCard(icon: Icons.local_fire_department_rounded, color: Colors.orange, label: '칼로리', value: '$todaysCalories', unit: 'kcal'),
+        const SizedBox(width: 16),
+        _buildInfoCard(icon: Icons.place_outlined, color: Colors.blue, label: '거리', value: todaysDistanceKm.toStringAsFixed(1), unit: 'km'),
+        const SizedBox(width: 16),
+        _buildInfoCard(icon: Icons.timer_outlined, color: Colors.purple, label: '활동 시간', value: '$todaysActivityMinutes', unit: '분'),
+      ],
+    );
+  }
+
+  Widget _buildInfoCard({required IconData icon, required Color color, required String label, required String value, required String unit}) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 12),
+        decoration: BoxDecoration(
+          color: Colors.grey[900],
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Column(
+          children: [
+            Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle), child: Icon(icon, color: color, size: 32)),
+            const SizedBox(height: 16),
+            Text(label, style: const TextStyle(fontSize: 16, color: Colors.grey)),
+            const SizedBox(height: 6),
+            RichText(text: TextSpan(children: [
+              TextSpan(text: value, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white)),
+              const WidgetSpan(child: SizedBox(width: 4)),
+              TextSpan(text: unit, style: const TextStyle(fontSize: 16, color: Colors.grey))
+            ])),
+          ],
+        ),
       ),
     );
   }
 
-  // 주간 차트 카드 (흰색 배경)
-  Widget _buildWeeklyChartCard() {
-    if (sortedDays.isEmpty) return const Center(child: Text("데이터 없음", style: TextStyle(color: Colors.white)));
+  Widget _buildWeeklyChart() {
+    if (barGroups.isEmpty) return const SizedBox(height: 200, child: Center(child: Text("데이터 없음", style: TextStyle(color: Colors.white, fontSize: 18))));
 
-    double maxY = 10000;
-    for (var e in sortedDays) if (e.value > maxY) maxY = e.value.toDouble();
+    double maxSteps = 0;
+    for (var e in sortedDays) {
+      if (e.value > maxSteps) maxSteps = e.value.toDouble();
+    }
+    // 최대값 설정 (최소 5000보)
+    final maxY = (maxSteps < 5000 ? 5000.0 : maxSteps * 1.2);
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 30, 20, 20),
+      // ✅ [수정] 그래프 높이 확대 (300 -> 360)
+      height: 360,
+      padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: Colors.white, // 흰색 카드
+        color: Colors.grey[900],
         borderRadius: BorderRadius.circular(24),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text("주간 활동 트렌드", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
-          const SizedBox(height: 20),
-          Expanded(
-            child: BarChart(
-              BarChartData(
-                alignment: BarChartAlignment.spaceAround,
-                maxY: maxY * 1.2,
-                titlesData: FlTitlesData(
-                  show: true,
-                  topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                  leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)), // Y축 숨김 (깔끔하게)
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      getTitlesWidget: (val, _) {
-                        if (val.toInt() >= 0 && val.toInt() < sortedDays.length) {
-                          return Padding(
-                            padding: const EdgeInsets.only(top: 8.0),
-                            child: Text(
-                              sortedDays[val.toInt()].key.substring(5), // 월-일
-                              style: const TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold),
-                            ),
-                          );
-                        }
-                        return const SizedBox();
-                      },
+      child: BarChart(
+        BarChartData(
+          alignment: BarChartAlignment.spaceAround,
+          maxY: maxY,
+          barTouchData: BarTouchData(
+            enabled: true,
+            touchTooltipData: BarTouchTooltipData(
+              tooltipRoundedRadius: 8,
+              tooltipBgColor: Colors.black87,
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final idx = group.x.toInt();
+                final dateKey = sortedDays[idx].key;
+                final date = DateTime.parse(dateKey);
+                final steps = rod.toY.toInt();
+
+                return BarTooltipItem(
+                  '${DateFormat('MM/dd (E)', 'ko').format(date)}\n',
+                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                  children: [
+                    TextSpan(
+                      text: NumberFormat('#,###').format(steps),
+                      style: const TextStyle(color: Colors.yellowAccent, fontSize: 18, fontWeight: FontWeight.w800),
                     ),
-                  ),
-                ),
-                borderData: FlBorderData(show: false),
-                gridData: const FlGridData(show: false),
-                barGroups: sortedDays.asMap().entries.map((e) => BarChartGroupData(
-                  x: e.key,
-                  barRods: [
-                    BarChartRodData(
-                      toY: e.value.value.toDouble(),
-                      color: e.key == sortedDays.length - 1 ? Colors.orangeAccent : Colors.grey[300], // 오늘은 오렌지, 과거는 회색
-                      width: 18,
-                      borderRadius: BorderRadius.circular(6),
-                      backDrawRodData: BackgroundBarChartRodData(
-                        show: true,
-                        toY: maxY * 1.2,
-                        color: Colors.grey[100], // 막대 배경
-                      ),
-                    )
+                    const TextSpan(text: ' 걸음', style: TextStyle(color: Colors.white, fontSize: 14)),
                   ],
-                )).toList(),
-              ),
+                );
+              },
             ),
           ),
-        ],
+          titlesData: FlTitlesData(
+            show: true,
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 50, // '1만' 글씨 공간 확보
+                getTitlesWidget: (value, meta) {
+                  // ✅ [수정] '5천', '1만' 단위 표시 로직
+                  if (value == 0) return const SizedBox();
+
+                  // 만 단위
+                  if (value % 10000 == 0) {
+                    return Text('${(value/10000).toInt()}만', style: const TextStyle(color: Colors.grey, fontSize: 14, fontWeight: FontWeight.bold));
+                  }
+                  // 천 단위 (5천 등)
+                  else if (value % 1000 == 0) {
+                    return Text('${(value/1000).toInt()}천', style: const TextStyle(color: Colors.grey, fontSize: 14));
+                  }
+
+                  return const SizedBox();
+                },
+              ),
+            ),
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  if (value.toInt() >= 0 && value.toInt() < dateLabelsForChart.length) {
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 10.0),
+                      child: Text(
+                        dateLabelsForChart[value.toInt()],
+                        style: TextStyle(
+                          color: value.toInt() == dateLabelsForChart.length - 1
+                              ? const Color(0xFF4CAF50)
+                              : Colors.grey,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
+                reservedSize: 40,
+              ),
+            ),
+            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          ),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            // ✅ [수정] 5,000보 간격으로 그리드 (5천, 1만, 1만5천...)
+            horizontalInterval: 5000,
+            getDrawingHorizontalLine: (value) => FlLine(color: Colors.white10, strokeWidth: 1),
+          ),
+          borderData: FlBorderData(show: false),
+          barGroups: barGroups,
+        ),
       ),
     );
   }
-}
-
-class _InfoItem extends StatelessWidget {
-  final String label; final String value; final String unit; final IconData icon; final Color color;
-  const _InfoItem({required this.label, required this.value, required this.unit, required this.icon, required this.color});
-  @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Icon(icon, color: color, size: 28),
-      const SizedBox(height: 8),
-      Row(
-        crossAxisAlignment: CrossAxisAlignment.baseline,
-        textBaseline: TextBaseline.alphabetic,
-        children: [
-          Text(value, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 24, color: Colors.black87)),
-          const SizedBox(width: 2),
-          Text(unit, style: const TextStyle(fontSize: 12, color: Colors.grey, fontWeight: FontWeight.bold)),
-        ],
-      ),
-      const SizedBox(height: 4),
-      Text(label, style: const TextStyle(color: Colors.black45, fontSize: 12)),
-    ],
-  );
 }

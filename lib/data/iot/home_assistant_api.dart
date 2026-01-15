@@ -1,15 +1,12 @@
-// lib/data/iot/home_assistant_api.dart
-
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'home_assistant_options.dart';
-import 'models.dart'; // models.dart가 따로 없다면 아래 클래스 사용
+import 'models.dart';
 
 class HomeAssistantApi {
   final HomeAssistantOptions options;
   final http.Client _client;
 
-  // ✅ [최적화] 모든 상태를 저장할 캐시 메모리
   Map<String, dynamic> _stateCache = {};
 
   static const _timerEntity = 'timer.ac_sleep_timer';
@@ -28,10 +25,7 @@ class HomeAssistantApi {
     'Content-Type': 'application/json',
   };
 
-  // ================= Bulk Load (속도 최적화 핵심) =================
-
-  /// ✅ HA의 모든 센서 상태를 '단 한 번의 통신'으로 가져와 캐시에 저장합니다.
-  /// Mirror 모드 진입 시나 Refresh 시 반드시 이 함수를 먼저 호출해야 합니다.
+  // ================= Bulk Load =================
   Future<void> preloadAllStates() async {
     try {
       final res = await _client.get(Uri.parse('${_base}api/states'), headers: _headers);
@@ -42,26 +36,18 @@ class HomeAssistantApi {
           final entityId = item['entity_id'] as String;
           _stateCache[entityId] = item;
         }
-        // debugPrint("HA Preloaded: ${_stateCache.length} entities");
       }
     } catch (e) {
       print("HA Preload Error: $e");
     }
   }
 
-  // ================= Public Fetch Methods (캐시 사용) =================
-
-  // ✅ [추가됨] 미러 페이지 호환용 Public 메서드
+  // ================= Public Fetch Methods =================
   Future<HomeAssistantState> getState(String entityId) async {
-    // 1. 캐시 확인 및 없으면 개별 로딩
     final data = await _getState(entityId);
-
-    // 2. 데이터가 비었을 경우 처리
     if (data.isEmpty) {
       return HomeAssistantState(entityId: entityId, state: '0', attributes: {});
     }
-
-    // 3. 모델로 변환하여 반환
     return HomeAssistantState.fromJson(data);
   }
 
@@ -104,7 +90,6 @@ class HomeAssistantApi {
   }
 
   Future<Map<String, dynamic>> fetchAirMonitorData() async {
-    // 네트워크 요청 없이 캐시에서 즉시 반환
     final temp = await _getDoubleState(options.airTempEntityId);
     final hum = await _getDoubleState(options.airHumEntityId);
     final co2 = await _getDoubleState(options.airCo2EntityId);
@@ -131,7 +116,6 @@ class HomeAssistantApi {
 
   Future<Map<String, double>> fetchInbodyData() async {
     final prefix = options.healthSensorPrefix;
-    // 여기서는 Future.wait를 쓰지만, 내부적으로 _getDoubleState가 캐시를 쓰므로 딜레이 없음
     final results = await Future.wait([ _getDoubleState('${prefix}weight'), _getDoubleState('${prefix}body_fat'), _getDoubleState('${prefix}basal_metabolic_rate'), Future.value(0.0), _getDoubleState('${prefix}systolic_blood_pressure'), _getDoubleState('${prefix}diastolic_blood_pressure'), _getDoubleState('${prefix}heart_rate') ]);
     double weight = results[0]; if (weight > 1000) weight = weight / 1000;
     double pbf = results[1]; double fatMass = 0.0; if (weight > 0 && pbf > 0) fatMass = weight * (pbf / 100);
@@ -141,10 +125,102 @@ class HomeAssistantApi {
 
   Future<HrvState> fetchHrvState(String entityId) async { if (entityId.isEmpty) return HrvState.initial; final data = await _getState(entityId); return HrvState(isOn: (data['state'] as String? ?? 'off') != 'off'); }
 
-  // (History는 캐싱 대상 아님)
-  Future<List<Map<String, dynamic>>> fetchHistory(String entityId, {int days = 30}) async { if (entityId.isEmpty) return []; final now = DateTime.now(); final startTime = now.subtract(Duration(days: days)); final timestamp = startTime.toIso8601String(); final uri = Uri.parse('${_base}api/history/period/$timestamp').replace(queryParameters: {'filter_entity_id': entityId, 'end_time': now.toIso8601String(), 'minimal_response': 'true'}); try { final res = await _client.get(uri, headers: _headers); if (res.statusCode == 200) { final list = jsonDecode(res.body); if (list.isNotEmpty && list[0] is List) return List<Map<String, dynamic>>.from(list[0]); } } catch (_) {} return []; }
+  // ================= History (그래프용) =================
 
-  // ================= Control Methods (제어 - 즉시 반영) =================
+// ... (기존 코드들)
+
+  // ================= History (Raw 데이터 조회) =================
+
+  /// ✅ [수정] UTC 시간 변환 추가 + 디버깅 로그 강화
+  /// ✅ [수정] end_time 파라미터 추가 (이게 없으면 하루치만 가져옴)
+  Future<List<Map<String, dynamic>>> getHistory(String entityId, {int days = 7}) async {
+    if (entityId.isEmpty) return [];
+
+    final now = DateTime.now();
+
+    // 시작 시간: 7일 전 (여유 있게 8일 전)
+    final startTime = now.subtract(Duration(days: days + 1)).toUtc();
+    final startStr = startTime.toIso8601String();
+
+    // ✅ 종료 시간: 현재 (이걸 넣어야 오늘까지 데이터를 다 줍니다)
+    final endTime = now.toUtc();
+    final endStr = endTime.toIso8601String();
+
+    // URL 생성 (end_time 추가됨!)
+    final url = '${_base}api/history/period/$startStr?filter_entity_id=$entityId&minimal_response&end_time=$endStr';
+
+    try {
+      final res = await _client.get(Uri.parse(url), headers: _headers);
+
+      if (res.statusCode == 200) {
+        final List<dynamic> outerList = jsonDecode(res.body);
+
+        if (outerList.isEmpty) {
+          print("History API: 결과 리스트가 비어있습니다.");
+          return [];
+        }
+
+        final List<dynamic> innerList = outerList[0];
+        print("History API: '$entityId' 데이터 ${innerList.length}개 수신됨 (기간: $startStr ~ $endStr)");
+
+        return innerList.map((e) => {
+          'state': e['state'],
+          'last_changed': e['last_changed'],
+        }).toList();
+      } else {
+        print("History API Error: ${res.statusCode} / ${res.body}");
+      }
+    } catch (e) {
+      print("History Fetch Exception: $e");
+    }
+    return [];
+  }
+
+
+  /// ✅ [신규] 통계 API (Statistics)
+  /// 하루 단위(period='day')로 요약된 데이터를 가져옵니다. (훨씬 빠르고 정확함)
+  Future<List<Map<String, dynamic>>> getStatistics(String entityId, {int days = 7}) async {
+    if (entityId.isEmpty) return [];
+
+    final now = DateTime.now();
+    // 넉넉하게 8일 전부터 조회 (시차 고려)
+    final startTime = now.subtract(Duration(days: days + 1));
+    final startStr = startTime.toIso8601String();
+
+    // 통계 API URL (period=day 옵션이 핵심)
+    final url = '${_base}api/history/statistics?period=day&statistic_ids=$entityId&start_time=$startStr';
+
+    try {
+      final res = await _client.get(Uri.parse(url), headers: _headers);
+
+      if (res.statusCode == 200) {
+        final Map<String, dynamic> json = jsonDecode(res.body);
+
+        // 구조: { "sensor.xxx": [ {state...}, {state...} ] }
+        if (json.containsKey(entityId)) {
+          final List<dynamic> stats = json[entityId];
+          return stats.map((e) => {
+            'max': e['max'], // 그 날의 최대값 (걸음수 누적치)
+            'start': e['start'], // 해당 날짜 시작 시간
+            'end': e['end'],
+          }).toList();
+        }
+      } else {
+        print("Statistics Error: ${res.statusCode} / ${res.body}");
+      }
+    } catch (e) {
+      print("Statistics Exception: $e");
+    }
+    return [];
+  }
+
+  /// ✅ 2. [에러 해결] 기존 코드 호환용 함수 (fetchHistory)
+  /// 기존 페이지들은 fetchHistory를 찾으므로, getHistory를 호출하도록 연결해줍니다.
+  Future<List<Map<String, dynamic>>> fetchHistory(String entityId, {int days = 30}) {
+    return getHistory(entityId, days: days);
+  }
+
+  // ================= Control Methods =================
 
   Future<void> setAirconPower(String entityId, bool on) async { await _callService('climate', on ? 'turn_on' : 'turn_off', {'entity_id': entityId}); if (!on) { try { await _callService('timer', 'cancel', {'entity_id': _timerEntity}); } catch (_) {} } }
   Future<void> setAirconTemp(String entityId, int temp) async { await _callService('climate', 'set_temperature', {'entity_id': entityId, 'temperature': temp}); }
@@ -162,7 +238,6 @@ class HomeAssistantApi {
     if (_stateCache.containsKey(entityId)) {
       return _stateCache[entityId]!;
     }
-    // 캐시 미스 시 개별 요청 (Fallback)
     try {
       final res = await _client.get(Uri.parse('${_base}api/states/$entityId'), headers: _headers);
       if (res.statusCode == 200) {
@@ -188,23 +263,12 @@ class HomeAssistantApi {
   bool _mapHaSwingToBool(String? m) => m != null && m.toLowerCase() != 'off';
 }
 
-// ✅ [추가] MirrorPage 등 외부에서 사용하는 상태 모델 클래스
 class HomeAssistantState {
   final String entityId;
   final String state;
   final Map<String, dynamic> attributes;
-
-  HomeAssistantState({
-    required this.entityId,
-    required this.state,
-    required this.attributes,
-  });
-
+  HomeAssistantState({required this.entityId, required this.state, required this.attributes});
   factory HomeAssistantState.fromJson(Map<String, dynamic> json) {
-    return HomeAssistantState(
-      entityId: json['entity_id'] ?? '',
-      state: json['state'] ?? '',
-      attributes: json['attributes'] ?? {},
-    );
+    return HomeAssistantState(entityId: json['entity_id'] ?? '', state: json['state'] ?? '', attributes: json['attributes'] ?? {});
   }
 }

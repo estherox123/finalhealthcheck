@@ -1,10 +1,11 @@
+import 'package:finalhealthcheck/pages/mirror/MIRROR_contacts_page.dart';
 import 'package:flutter/material.dart';
 
 // ✅ 페이지 Import
 import 'pages/mirror/MIRROR_home_page.dart';           // 1. 홈 (시계/대시보드)
 import 'pages/mirror/MIRROR_health_summary_page.dart'; // 2. 건강 (미러용 디자인)
 import 'pages/device_control_page.dart';               // 3. 제어 (공용 - 다크테마 자동적용)
-import 'pages/emergency_contacts_page.dart';           // 4. 긴급 (공용 - 다크테마 자동적용)
+import 'pages/mirror/MIRROR_contacts_page.dart';           // 4. 전화 (공용 - 다크테마 자동적용)
 
 class MirrorAppShell extends StatefulWidget {
   const MirrorAppShell({super.key});
@@ -21,7 +22,7 @@ class _MirrorAppShellState extends State<MirrorAppShell> {
     MirrorHomePage(),          // 0
     MirrorHealthSummaryPage(), // 1
     DeviceControlPage(),       // 2
-    EmergencyContactPage(),    // 3
+    MirrorContactPage(),    // 3
   ];
 
   void _onItemTapped(int index) {

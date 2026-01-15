@@ -498,11 +498,10 @@ class _RecoveryCard extends StatelessWidget {
   }
 }
 
-// ✅ [수정] GridCard도 값(Value)과 단위(Unit)를 분리하여 표시
 class _HealthGridCard extends StatelessWidget {
   final String title;
-  final String value; // 수정: 전체 문자열 대신 값만 받음
-  final String? unit; // 추가: 단위
+  final String value;
+  final String? unit;
   final _Status status;
   final String? statusLabel;
   final double? progress;
@@ -524,36 +523,89 @@ class _HealthGridCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = _statusColor(status);
     return InkWell(
-      onTap: onTap, borderRadius: BorderRadius.circular(20),
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
       child: Container(
         padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 10, offset: const Offset(0, 4))]),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Row(children: [Icon(icon, size: 20, color: color), const SizedBox(width: 8), Flexible(child: Text(title, style: TextStyle(fontSize: 15, color: Colors.grey[700], fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis))]),
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // ✅ 값과 단위를 분리해서 표시 (값은 크고 진하게, 단위는 작게)
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.baseline,
-              textBaseline: TextBaseline.alphabetic,
-              children: [
-                Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: Colors.black87)),
-                if (unit != null) ...[
-                  const SizedBox(width: 4),
-                  Text(unit!, style: TextStyle(fontSize: 14, color: Colors.grey[600], fontWeight: FontWeight.w600)),
-                ]
-              ],
-            ),
-            const SizedBox(height: 8),
-            if (statusLabel != null)
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4))
+            ]),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
               Row(children: [
-                Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(6)), child: Text(statusLabel!, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color))),
+                Icon(icon, size: 20, color: color),
+                const SizedBox(width: 8),
+                Flexible(
+                    child: Text(title,
+                        style: TextStyle(
+                            fontSize: 15,
+                            color: Colors.grey[700],
+                            fontWeight: FontWeight.w600),
+                        overflow: TextOverflow.ellipsis))
               ]),
-            if (progress != null) ...[
-              const SizedBox(height: 6),
-              ClipRRect(borderRadius: BorderRadius.circular(4), child: LinearProgressIndicator(value: progress!.clamp(0.0, 1.0), backgroundColor: color.withOpacity(0.15), color: color, minHeight: 6)),
-            ]
-          ])
-        ]),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+                // ✅ [핵심 수정] FittedBox로 감싸서 오버플로우 방지
+                FittedBox(
+                  fit: BoxFit.scaleDown, // 공간이 부족할 때만 축소 (확대 안 함)
+                  alignment: Alignment.centerLeft, // 왼쪽 정렬 유지
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
+                    children: [
+                      Text(value,
+                          style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.black87)),
+                      if (unit != null) ...[
+                        const SizedBox(width: 4),
+                        Text(unit!,
+                            style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey[600],
+                                fontWeight: FontWeight.w600)),
+                      ]
+                    ],
+                  ),
+                ),
+                // ------------------------------------------------
+
+                const SizedBox(height: 8),
+                if (statusLabel != null)
+                  Row(children: [
+                    Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                            color: color.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(6)),
+                        child: Text(statusLabel!,
+                            style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: color))),
+                  ]),
+                if (progress != null) ...[
+                  const SizedBox(height: 6),
+                  ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                          value: progress!.clamp(0.0, 1.0),
+                          backgroundColor: color.withOpacity(0.15),
+                          color: color,
+                          minHeight: 6)),
+                ]
+              ])
+            ]),
       ),
     );
   }

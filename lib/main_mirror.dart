@@ -1,88 +1,47 @@
 import 'package:flutter/material.dart';
+import 'package:intl/date_symbol_data_local.dart';
+import 'package:permission_handler/permission_handler.dart';
 
-// ✅ 페이지 Import
-import 'pages/mirror/MIRROR_home_page.dart';           // 1. 홈 (시계)
-import 'pages/mirror/MIRROR_health_summary_page.dart'; // 2. 건강 (미러용)
-import 'pages/device_control_page.dart';               // 3. 제어 (공용)
-import 'pages/emergency_contacts_page.dart';           // 4. 긴급 (공용)
+// ⚠️ [중요] 방금 보여주신 코드가 들어있는 파일명을 정확히 import 해야 합니다.
+// 만약 보여주신 코드가 'lib/mirror_app_shell.dart'라면 아래처럼 씁니다.
+import 'mirror_app_shell.dart';
 
-class MirrorAppShell extends StatefulWidget {
-  const MirrorAppShell({super.key});
+// ✅ 이 함수가 있어야 앱이 시작됩니다!
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initializeDateFormatting();
 
-  @override
-  State<MirrorAppShell> createState() => _MirrorAppShellState();
+  // 권한 요청 (필요 시)
+  await [
+    Permission.activityRecognition,
+    Permission.location,
+    Permission.sensors,
+  ].request();
+
+  runApp(const MirrorApp());
 }
 
-class _MirrorAppShellState extends State<MirrorAppShell> {
-  int _currentIndex = 0;
-
-  // ✅ 탭 페이지 구성 (홈 추가됨)
-  final List<Widget> _pages = const [
-    MirrorHomePage(),          // 0: 홈 (대시보드)
-    MirrorHealthSummaryPage(), // 1: 건강
-    DeviceControlPage(),       // 2: 제어
-    EmergencyContactPage(),    // 3: 긴급
-  ];
-
-  void _onItemTapped(int index) {
-    setState(() {
-      _currentIndex = index;
-    });
-  }
+class MirrorApp extends StatelessWidget {
+  const MirrorApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black, // 미러 배경 검정
+    return MaterialApp(
+      title: 'Smart Mirror',
+      debugShowCheckedModeBanner: false,
 
-      // 페이지 표시 영역
-      body: IndexedStack(
-        index: _currentIndex,
-        children: _pages,
-      ),
-
-      // ✅ 하단 탭바
-      bottomNavigationBar: Theme(
-        data: Theme.of(context).copyWith(
-          canvasColor: Colors.black, // 탭바 배경 검정
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          onTap: _onItemTapped,
+      // ✅ 미러용 다크 테마 설정
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: Colors.black,
+        appBarTheme: const AppBarTheme(
           backgroundColor: Colors.black,
-          selectedItemColor: Colors.white, // 선택된 아이콘 흰색
-          unselectedItemColor: Colors.grey, // 선택 안 된 아이콘 회색
-          type: BottomNavigationBarType.fixed, // 4개 이상이므로 fixed 필수
-          showSelectedLabels: true,
-          showUnselectedLabels: true,
-          items: const [
-            // 1. 홈
-            BottomNavigationBarItem(
-              icon: Icon(Icons.home_outlined),
-              activeIcon: Icon(Icons.home),
-              label: '홈',
-            ),
-            // 2. 건강
-            BottomNavigationBarItem(
-              icon: Icon(Icons.health_and_safety_outlined),
-              activeIcon: Icon(Icons.health_and_safety),
-              label: '건강',
-            ),
-            // 3. 제어
-            BottomNavigationBarItem(
-              icon: Icon(Icons.devices_other_outlined),
-              activeIcon: Icon(Icons.devices_other),
-              label: '제어',
-            ),
-            // 4. 긴급
-            BottomNavigationBarItem(
-              icon: Icon(Icons.phone_in_talk_outlined),
-              activeIcon: Icon(Icons.phone_in_talk),
-              label: '긴급',
-            ),
-          ],
+          foregroundColor: Colors.white,
+          elevation: 0,
         ),
       ),
+
+      // ✅ 여기서 아까 보여주신 'MirrorAppShell'을 실행합니다.
+      home: const MirrorAppShell(),
     );
   }
 }

@@ -1,5 +1,3 @@
-// lib/pages/blood_pressure_page.dart
-
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -34,9 +32,7 @@ class BloodPressurePage extends StatefulWidget {
 }
 
 class _BloodPressurePageState extends State<BloodPressurePage> {
-  bool _isLoadingLatest = true; // 현재 상태 로딩 중
-  bool _isLoadingHistory = true; // 과거 기록 로딩 중
-
+  bool _isLoading = true;
   List<_BpRecord> _history = [];
   _BpRecord? _latest;
   late final HomeAssistantApi _api;
@@ -44,198 +40,151 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
   @override
   void initState() {
     super.initState();
-    final options = HomeAssistantOptions.fromEnv();
-    _api = HomeAssistantApi(options: options);
-
-    // 1. 현재 데이터 먼저 로딩 (빠름)
-    _loadCurrentData();
-    // 2. 과거 기록 나중에 로딩 (느림)
-    _loadHistoryData();
+    _api = HomeAssistantApi(options: HomeAssistantOptions.fromEnv());
+    _loadAllData();
   }
 
-  /// ✅ 1단계: 현재 상태만 빠르게 조회
-  Future<void> _loadCurrentData() async {
-    try {
-      final currentData = await _api.fetchInbodyData(); // 이미 있는 메서드 재활용
-
-      if (currentData['systolic']! > 0 && currentData['diastolic']! > 0) {
-        final now = DateTime.now();
-        final record = _BpRecord(
-          date: now,
-          sys: currentData['systolic']!.toInt(),
-          dia: currentData['diastolic']!.toInt(),
-          pulse: currentData['pulse']?.toInt(),
-        );
-
-        if (mounted) {
-          setState(() {
-            _latest = record;
-            // 히스토리 로딩 전이라도 일단 리스트에 넣어둠
-            if (_history.isEmpty) _history = [record];
-            _isLoadingLatest = false;
-          });
-        }
-      } else {
-        if (mounted) setState(() => _isLoadingLatest = false);
-      }
-    } catch (e) {
-      debugPrint("Current BP Load Error: $e");
-      if (mounted) setState(() => _isLoadingLatest = false);
-    }
-  }
-
-  /// ✅ 2단계: 과거 30일치 기록 조회
-  Future<void> _loadHistoryData() async {
+  Future<void> _loadAllData() async {
+    setState(() => _isLoading = true);
     try {
       final prefix = _api.options.healthSensorPrefix;
-      if (prefix.isEmpty) return;
 
-      final sysId = '${prefix}systolic_blood_pressure';
-      final diaId = '${prefix}diastolic_blood_pressure';
-      final pulseId = '${prefix}heart_rate';
+      // 1. 현재 데이터
+      final sysState = await _api.getState('${prefix}systolic_blood_pressure');
+      final diaState = await _api.getState('${prefix}diastolic_blood_pressure');
+      final pulseState = await _api.getState('${prefix}heart_rate');
 
-      final results = await Future.wait([
-        _api.fetchHistory(sysId, days: 30),
-        _api.fetchHistory(diaId, days: 30),
-        _api.fetchHistory(pulseId, days: 30),
-      ]);
+      int currentSys = double.tryParse(sysState.state)?.toInt() ?? 0;
+      int currentDia = double.tryParse(diaState.state)?.toInt() ?? 0;
+      int currentPulse = double.tryParse(pulseState.state)?.toInt() ?? 0;
 
-      final sysLog = results[0];
-      final diaLog = results[1];
-      final pulseLog = results[2];
+      if (currentSys > 0 && currentDia > 0) {
+        _latest = _BpRecord(
+            date: DateTime.now(),
+            sys: currentSys,
+            dia: currentDia,
+            pulse: currentPulse > 0 ? currentPulse : null
+        );
+      }
 
-      List<_BpRecord> merged = [];
+      // 2. 과거 데이터 (30일)
+      final sysHist = await _api.getHistory('${prefix}systolic_blood_pressure', days: 30);
+      final diaHist = await _api.getHistory('${prefix}diastolic_blood_pressure', days: 30);
 
-      for (var sItem in sysLog) {
-        final stateStr = sItem['state'];
-        if (stateStr == 'unavailable' || stateStr == 'unknown') continue;
-        final sysVal = double.tryParse(stateStr)?.toInt() ?? 0;
-        if (sysVal == 0) continue;
+      // 3. 병합
+      _history = _mergeHistory(sysHist, diaHist);
 
-        final date = DateTime.parse(sItem['last_updated']).toLocal();
-
-        // 매칭 범위 30분으로 넉넉하게 잡음
-        final dItem = diaLog.firstWhere((d) {
-          final dDate = DateTime.parse(d['last_updated']).toLocal();
-          return dDate.difference(date).inMinutes.abs() < 30;
-        }, orElse: () => {});
-
-        final pItem = pulseLog.firstWhere((p) {
-          final pDate = DateTime.parse(p['last_updated']).toLocal();
-          return pDate.difference(date).inMinutes.abs() < 30;
-        }, orElse: () => {});
-
-        if (dItem.isNotEmpty) {
-          final diaVal = double.tryParse(dItem['state'])?.toInt() ?? 0;
-          final pulseVal = pItem.isNotEmpty ? double.tryParse(pItem['state'])?.toInt() : null;
-          if (diaVal > 0) {
-            merged.add(_BpRecord(date: date, sys: sysVal, dia: diaVal, pulse: pulseVal));
-          }
+      if (_latest != null) {
+        if (_history.isEmpty || _history.first.date.difference(_latest!.date).inMinutes.abs() > 10) {
+          _history.insert(0, _latest!);
         }
       }
 
-      // 현재 _latest 값이 있다면 중복 체크 후 추가
-      if (_latest != null) {
-        bool exists = merged.any((r) =>
-        r.sys == _latest!.sys && r.dia == _latest!.dia &&
-            r.date.difference(_latest!.date).inMinutes.abs() < 60
-        );
-        if (!exists) merged.add(_latest!);
-      }
+      setState(() => _isLoading = false);
 
-      // 최신순 정렬
-      merged.sort((a, b) => b.date.compareTo(a.date));
-
-      if (mounted) {
-        setState(() {
-          _history = merged;
-          if (merged.isNotEmpty) _latest = merged.first; // 최신값 갱신
-          _isLoadingHistory = false;
-        });
-      }
     } catch (e) {
-      debugPrint("HA History Load Error: $e");
-      if (mounted) setState(() => _isLoadingHistory = false);
+      debugPrint("BP Load Error: $e");
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  List<_BpRecord> _mergeHistory(List<Map<String, dynamic>> sysList, List<Map<String, dynamic>> diaList) {
+    List<_BpRecord> merged = [];
+    DateTime parseDate(String? s) => DateTime.tryParse(s ?? '')?.toLocal() ?? DateTime(2000);
+
+    for (var sItem in sysList) {
+      int sVal = double.tryParse(sItem['state'].toString())?.toInt() ?? 0;
+      if (sVal <= 0) continue;
+
+      DateTime sTime = parseDate(sItem['last_changed']);
+
+      var dItem = diaList.firstWhere(
+            (d) => parseDate(d['last_changed']).difference(sTime).inMinutes.abs() < 30,
+        orElse: () => {},
+      );
+
+      if (dItem.isNotEmpty) {
+        int dVal = double.tryParse(dItem['state'].toString())?.toInt() ?? 0;
+        if (dVal > 0) {
+          merged.add(_BpRecord(date: sTime, sys: sVal, dia: dVal));
+        }
+      }
+    }
+    merged.sort((a, b) => b.date.compareTo(a.date));
+    return merged;
   }
 
   @override
   Widget build(BuildContext context) {
-    // 적어도 현재 데이터 로딩은 끝나야 화면을 보여줌
-    // (히스토리는 로딩 중이어도 차트 자리만 비워두고 보여줌)
-    if (_isLoadingLatest) {
+    final isMirror = MediaQuery.of(context).size.width > 600 || Theme.of(context).scaffoldBackgroundColor == Colors.black;
+    final bgColor = isMirror ? Colors.black : const Color(0xFFF5F7FA);
+    final cardColor = isMirror ? Colors.grey[900]! : Colors.white;
+    final textColor = isMirror ? Colors.white : Colors.black87;
+    // ✅ [수정] !를 붙여서 Color 타입을 보장 (잠재적 에러 방지)
+    final Color subTextColor = isMirror ? Colors.grey : Colors.grey[600]!;
+
+    if (_isLoading) {
       return Scaffold(
-        appBar: AppBar(title: const Text('혈압 관리'), backgroundColor: const Color(0xFFF5F7FA), elevation: 0),
-        body: const Center(child: CircularProgressIndicator()),
+        backgroundColor: bgColor,
+        appBar: AppBar(backgroundColor: bgColor, elevation: 0, iconTheme: IconThemeData(color: textColor)),
+        body: Center(child: CircularProgressIndicator(color: textColor)),
       );
     }
 
     return Scaffold(
+      backgroundColor: bgColor,
       appBar: AppBar(
-        title: const Text('혈압 관리', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
-        backgroundColor: const Color(0xFFF5F7FA),
+        title: Text('혈압 관리', style: TextStyle(fontWeight: FontWeight.bold, color: textColor, fontSize: 24)),
+        backgroundColor: bgColor,
         elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.black87),
+        iconTheme: IconThemeData(color: textColor),
         actions: [
           IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: () {
-                setState(() { _isLoadingLatest = true; _isLoadingHistory = true; });
-                _loadCurrentData();
-                _loadHistoryData();
-              }
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadAllData,
           )
         ],
       ),
-      body: _latest == null && !_isLoadingHistory
+      body: _latest == null && _history.isEmpty
           ? Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.error_outline, size: 48, color: Colors.grey),
+            Icon(Icons.error_outline, size: 48, color: subTextColor),
             const SizedBox(height: 16),
-            Text("기록이 없습니다.\nHA 센서를 확인하세요.\n(${_api.options.healthSensorPrefix})", textAlign: TextAlign.center, style: const TextStyle(color: Colors.grey)),
+            Text("기록이 없습니다.", style: TextStyle(color: subTextColor, fontSize: 18)),
           ],
         ),
       )
           : RefreshIndicator(
-        onRefresh: () async {
-          await Future.wait([_loadCurrentData(), _loadHistoryData()]);
-        },
+        onRefresh: _loadAllData,
         child: ListView(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(24),
           children: [
-            // 1. 최신 데이터 카드 (가장 먼저 표시)
-            if (_latest != null) _buildLatestCard(_latest!),
+            if (_latest != null) _buildLatestCard(_latest!, cardColor, textColor, subTextColor),
 
-            const SizedBox(height: 24),
-            const Text("최근 변화 (30일)", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
+            const SizedBox(height: 32),
+            Text("최근 30일 변화", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: textColor)),
+            const SizedBox(height: 16),
 
-            // 2. 그래프 (로딩 중이면 로딩 표시)
-            _isLoadingHistory
-                ? const SizedBox(height: 250, child: Center(child: CircularProgressIndicator()))
-                : _buildLineChart(),
+            _buildLineChart(cardColor, textColor),
 
-            const SizedBox(height: 24),
-            const Text("상세 기록", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
+            const SizedBox(height: 32),
+            Text("상세 기록", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: textColor)),
+            const SizedBox(height: 16),
 
-            // 3. 리스트
-            _isLoadingHistory
-                ? const SizedBox(height: 100, child: Center(child: Text("기록 불러오는 중...", style: TextStyle(color: Colors.grey))))
-                : _buildHistoryList(),
+            _buildHistoryList(cardColor, textColor, subTextColor),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildLatestCard(_BpRecord record) {
+  Widget _buildLatestCard(_BpRecord record, Color cardBg, Color textCol, Color subCol) {
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: cardBg,
         borderRadius: BorderRadius.circular(24),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 16, offset: const Offset(0, 8))],
       ),
@@ -246,7 +195,7 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
             children: [
               Text(
                 DateFormat('MM월 dd일 (E) a h:mm', 'ko').format(record.date),
-                style: const TextStyle(color: Colors.grey, fontSize: 14),
+                style: TextStyle(color: subCol, fontSize: 16),
               ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -262,39 +211,39 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
               ),
             ],
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 24),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Text('${record.sys}', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w900, color: Colors.black87, height: 1.0)),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                child: Text('/', style: TextStyle(fontSize: 32, color: Colors.grey, fontWeight: FontWeight.w300)),
+              Text('${record.sys}', style: TextStyle(fontSize: 64, fontWeight: FontWeight.w900, color: textCol, height: 1.0)),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                child: Text('/', style: TextStyle(fontSize: 40, color: subCol, fontWeight: FontWeight.w300)),
               ),
-              Text('${record.dia}', style: const TextStyle(fontSize: 48, fontWeight: FontWeight.w900, color: Colors.black87, height: 1.0)),
+              Text('${record.dia}', style: TextStyle(fontSize: 64, fontWeight: FontWeight.w900, color: textCol, height: 1.0)),
               const SizedBox(width: 8),
-              const Padding(
-                padding: EdgeInsets.only(bottom: 10),
-                child: Text('mmHg', style: TextStyle(fontSize: 14, color: Colors.grey)),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: Text('mmHg', style: TextStyle(fontSize: 16, color: subCol)),
               ),
             ],
           ),
-          const SizedBox(height: 20),
-          Container(height: 1, color: Colors.grey.shade200),
+          const SizedBox(height: 24),
+          Divider(color: Colors.grey.withOpacity(0.2)),
           const SizedBox(height: 16),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.monitor_heart, color: Colors.redAccent, size: 20),
+              const Icon(Icons.favorite, color: Colors.redAccent, size: 24),
               const SizedBox(width: 8),
-              const Text("맥박", style: TextStyle(fontSize: 16, color: Colors.grey)),
+              Text("맥박", style: TextStyle(fontSize: 18, color: subCol)),
               const SizedBox(width: 8),
               Text(
                 record.pulse != null && record.pulse! > 0 ? '${record.pulse}' : '-',
-                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: textCol),
               ),
-              const Text(" bpm", style: TextStyle(fontSize: 12, color: Colors.grey)),
+              Text(" bpm", style: TextStyle(fontSize: 14, color: subCol)),
             ],
           )
         ],
@@ -302,19 +251,17 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
     );
   }
 
-  Widget _buildLineChart() {
-    // 차트 데이터가 없으면 빈 공간
+  Widget _buildLineChart(Color cardBg, Color textCol) {
     if (_history.isEmpty) return const SizedBox(height: 250, child: Center(child: Text("차트 데이터 없음")));
 
     final chartData = _history.take(15).toList().reversed.toList();
 
     return Container(
-      height: 250,
-      padding: const EdgeInsets.only(right: 20, left: 10, top: 20, bottom: 10),
+      height: 300,
+      padding: const EdgeInsets.only(right: 24, left: 12, top: 24, bottom: 12),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+        color: cardBg,
+        borderRadius: BorderRadius.circular(24),
       ),
       child: LineChart(
         LineChartData(
@@ -324,9 +271,9 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
             horizontalInterval: 40,
             getDrawingHorizontalLine: (value) {
               if (value == 120 || value == 80) {
-                return FlLine(color: Colors.grey.withOpacity(0.5), strokeWidth: 1, dashArray: [4, 4]);
+                return FlLine(color: Colors.green.withOpacity(0.5), strokeWidth: 1, dashArray: [4, 4]);
               }
-              return FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1);
+              return FlLine(color: Colors.grey.withOpacity(0.1), strokeWidth: 1);
             },
           ),
           titlesData: FlTitlesData(
@@ -346,7 +293,7 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
                         padding: const EdgeInsets.only(top: 8.0),
                         child: Text(
                           DateFormat('M/d').format(chartData[index].date),
-                          style: const TextStyle(color: Colors.grey, fontSize: 10),
+                          style: const TextStyle(color: Colors.grey, fontSize: 12),
                         ),
                       );
                     }
@@ -358,11 +305,11 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
             leftTitles: AxisTitles(
               sideTitles: SideTitles(
                 showTitles: true,
-                reservedSize: 35,
+                reservedSize: 40,
                 interval: 40,
                 getTitlesWidget: (val, meta) => Text(
                   '${val.toInt()}',
-                  style: const TextStyle(color: Colors.grey, fontSize: 10),
+                  style: const TextStyle(color: Colors.grey, fontSize: 12),
                 ),
               ),
             ),
@@ -372,33 +319,43 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
           maxY: 200,
           lineBarsData: [
             LineChartBarData(
-              spots: chartData.asMap().entries.map((e) {
-                return FlSpot(e.key.toDouble(), e.value.sys.toDouble());
-              }).toList(),
+              spots: chartData.asMap().entries.map((e) => FlSpot(e.key.toDouble(), e.value.sys.toDouble())).toList(),
               isCurved: true,
               color: Colors.redAccent,
-              barWidth: 3,
+              barWidth: 4,
               isStrokeCapRound: true,
               dotData: const FlDotData(show: true),
             ),
             LineChartBarData(
-              spots: chartData.asMap().entries.map((e) {
-                return FlSpot(e.key.toDouble(), e.value.dia.toDouble());
-              }).toList(),
+              spots: chartData.asMap().entries.map((e) => FlSpot(e.key.toDouble(), e.value.dia.toDouble())).toList(),
               isCurved: true,
               color: Colors.blueAccent,
-              barWidth: 3,
+              barWidth: 4,
               isStrokeCapRound: true,
               dotData: const FlDotData(show: true),
               belowBarData: BarAreaData(show: true, color: Colors.blueAccent.withOpacity(0.1)),
             ),
           ],
+          lineTouchData: LineTouchData(
+            touchTooltipData: LineTouchTooltipData(
+              // ✅ [수정] !를 붙여 에러 해결 (Color 타입 보장)
+              tooltipBgColor: Colors.grey[800]!,
+              getTooltipItems: (touchedSpots) {
+                return touchedSpots.map((spot) {
+                  return LineTooltipItem(
+                    "${spot.y.toInt()}",
+                    const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  );
+                }).toList();
+              },
+            ),
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildHistoryList() {
+  Widget _buildHistoryList(Color cardBg, Color textCol, Color subCol) {
     return ListView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
@@ -407,11 +364,10 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
         final data = _history[index];
         return Container(
           margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
           decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.03), blurRadius: 8, offset: const Offset(0, 2))],
+            color: cardBg,
+            borderRadius: BorderRadius.circular(20),
           ),
           child: Row(
             children: [
@@ -420,11 +376,11 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
                 children: [
                   Text(
                     DateFormat('MM.dd').format(data.date),
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: textCol),
                   ),
                   Text(
                     DateFormat('HH:mm').format(data.date),
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    style: TextStyle(fontSize: 14, color: subCol),
                   ),
                 ],
               ),
@@ -435,20 +391,20 @@ class _BloodPressurePageState extends State<BloodPressurePage> {
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      Text('${data.sys}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                      const Text('/', style: TextStyle(fontSize: 14, color: Colors.grey)),
-                      Text('${data.dia}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      Text('${data.sys}', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: textCol)),
+                      Text('/', style: TextStyle(fontSize: 16, color: subCol)),
+                      Text('${data.dia}', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: textCol)),
                       const SizedBox(width: 4),
-                      const Text('mmHg', style: TextStyle(fontSize: 10, color: Colors.grey)),
+                      Text('mmHg', style: TextStyle(fontSize: 12, color: subCol)),
                     ],
                   ),
                   if (data.pulse != null)
-                    Text('맥박 ${data.pulse}', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                    Text('맥박 ${data.pulse}', style: TextStyle(fontSize: 14, color: subCol)),
                 ],
               ),
               const SizedBox(width: 16),
               Container(
-                width: 8, height: 8,
+                width: 10, height: 10,
                 decoration: BoxDecoration(color: data.statusColor, shape: BoxShape.circle),
               ),
             ],

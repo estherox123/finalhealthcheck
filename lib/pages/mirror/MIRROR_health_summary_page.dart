@@ -13,11 +13,11 @@ import '../../data/recovery_score.dart' as rec;
 import 'MIRROR_sleep_detail_page.dart';
 import 'mirror_steps_page.dart';
 import 'MIRROR_heart_rate_detail_page.dart';
+import 'MIRROR_stress_recovery_page.dart'; // ✅ 미러 전용 회복 페이지 연결
+import 'MIRROR_inbody_page.dart';
 
-// 기타 페이지 (모바일용 재사용)
-import '../inbody_page.dart';
+// 기타 페이지 (모바일용 재사용 - 추후 미러용 제작 필요)
 import '../blood_pressure_page.dart';
-import '../stress_recovery_page.dart'; // ✅ [추가]
 
 class MirrorHealthSummaryPage extends StatefulWidget {
   const MirrorHealthSummaryPage({super.key});
@@ -26,11 +26,11 @@ class MirrorHealthSummaryPage extends StatefulWidget {
 }
 
 class _MirrorHealthSummaryPageState extends State<MirrorHealthSummaryPage> {
-  // ... (기존 변수 및 initState 동일) ...
   late final HomeAssistantApi _iotApi;
   late final DeviceControlController _haController;
   bool _loading = true;
   Timer? _refreshTimer;
+
   int? _recoveryScore;
   rec.RecoveryLabel? _recoveryLabel;
   int? _stepsToday;
@@ -64,9 +64,8 @@ class _MirrorHealthSummaryPageState extends State<MirrorHealthSummaryPage> {
     }
   }
 
-  // ... (loadHaData 로직 동일) ...
   Future<void> _loadHaData() async {
-    setState(() => _loading = true);
+    // (로딩 중 화면 깜빡임 방지를 위해 setState 최소화)
     try {
       await _haController.init();
       final prefix = _iotApi.options.healthSensorPrefix;
@@ -149,38 +148,34 @@ class _MirrorHealthSummaryPageState extends State<MirrorHealthSummaryPage> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('건강 요약 (Mirror)', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 24)),
+        // ✅ 폰트 UP
+        title: const Text('건강 요약', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 28)),
         backgroundColor: Colors.black,
         elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        actions: [IconButton(icon: const Icon(Icons.refresh, color: Colors.white), onPressed: _loadHaData)],
+        iconTheme: const IconThemeData(color: Colors.white, size: 30),
+        actions: [
+          IconButton(icon: const Icon(Icons.refresh, color: Colors.white, size: 30), onPressed: _loadHaData)
+        ],
       ),
       body: RefreshIndicator(
         onRefresh: _loadHaData,
         child: ListView(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+          padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 20),
           children: [
             _SectionHeader('오늘 회복 상태'),
             _RecoveryCard(
               score: _recoveryScore,
               label: _recoveryLabelText(_recoveryLabel),
               status: _recoveryLabelToStatus(_recoveryLabel),
-
-              // ✅ [수정] 회복 점수 페이지 연결
-              onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => Theme(
-                      data: ThemeData.dark().copyWith(scaffoldBackgroundColor: Colors.black, appBarTheme: const AppBarTheme(backgroundColor: Colors.black)),
-                      child: const StressRecoveryPage()
-                  ))
-              ),
+              // ✅ 미러 전용 회복 페이지로 연결
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MirrorStressRecoveryPage())),
             ),
-            const SizedBox(height: 30),
+            const SizedBox(height: 40),
 
             _SectionHeader('활동 및 수면'),
             GridView.count(
               crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
-              childAspectRatio: 1.6, mainAxisSpacing: 16, crossAxisSpacing: 16,
+              childAspectRatio: 1.5, mainAxisSpacing: 20, crossAxisSpacing: 20,
               children: [
                 _HealthGridCard(
                   title: '활동량', value: _stepsToday != null ? NumberFormat('#,###').format(_stepsToday) : '-', unit: _stepsToday != null ? '걸음' : null,
@@ -196,12 +191,12 @@ class _MirrorHealthSummaryPageState extends State<MirrorHealthSummaryPage> {
                 ),
               ],
             ),
-            const SizedBox(height: 30),
+            const SizedBox(height: 40),
 
             _SectionHeader('주요 바이탈'),
             GridView.count(
               crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
-              childAspectRatio: 1.6, mainAxisSpacing: 16, crossAxisSpacing: 16,
+              childAspectRatio: 1.5, mainAxisSpacing: 20, crossAxisSpacing: 20,
               children: [
                 _HealthGridCard(
                   title: '심박수', value: _heartRate != null ? '$_heartRate' : '-', unit: _heartRate != null ? 'bpm' : null,
@@ -211,18 +206,12 @@ class _MirrorHealthSummaryPageState extends State<MirrorHealthSummaryPage> {
                 _HealthGridCard(
                   title: '체중', value: _weight != null ? _weight!.toStringAsFixed(1) : '-', unit: _weight != null ? 'kg' : null,
                   status: weightInfo.status, statusLabel: weightInfo.label, icon: Icons.monitor_weight_outlined,
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => Theme(
-                      data: ThemeData.dark().copyWith(scaffoldBackgroundColor: Colors.black, appBarTheme: const AppBarTheme(backgroundColor: Colors.black)),
-                      child: const InBodyPage()
-                  ))),
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => Theme(data: ThemeData.dark().copyWith(scaffoldBackgroundColor: Colors.black, appBarTheme: const AppBarTheme(backgroundColor: Colors.black)), child: const MirrorInBodyPage()))),
                 ),
                 _HealthGridCard(
                   title: '혈압', value: (_bpSys != null) ? '$_bpSys/$_bpDia' : '-', unit: (_bpSys != null) ? 'mmHg' : null,
                   status: bpInfo.status, statusLabel: bpInfo.label, icon: Icons.favorite_outline,
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => Theme(
-                      data: ThemeData.dark().copyWith(scaffoldBackgroundColor: Colors.black, appBarTheme: const AppBarTheme(backgroundColor: Colors.black)),
-                      child: const BloodPressurePage()
-                  ))),
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => Theme(data: ThemeData.dark().copyWith(scaffoldBackgroundColor: Colors.black, appBarTheme: const AppBarTheme(backgroundColor: Colors.black)), child: const BloodPressurePage()))),
                 ),
                 _HealthGridCard(
                   title: '혈당', value: _glucose != null ? '$_glucose' : '-', unit: _glucose != null ? 'mg/dL' : null,
@@ -231,7 +220,7 @@ class _MirrorHealthSummaryPageState extends State<MirrorHealthSummaryPage> {
                 ),
               ],
             ),
-            const SizedBox(height: 30),
+            const SizedBox(height: 40),
 
             _SectionHeader('정기 검사'),
             _HealthListCard(title: '소변검사 (7일 주기)', subtitle: '기록 없음', status: _Status.warn, tagText: '검사 필요', icon: Icons.science_outlined, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const _WipPage(title: '소변검사')))),
@@ -243,7 +232,6 @@ class _MirrorHealthSummaryPageState extends State<MirrorHealthSummaryPage> {
     );
   }
 
-  // Helper Functions
   String _recoveryLabelText(rec.RecoveryLabel? label) {
     switch (label) { case rec.RecoveryLabel.recoveryUp: return '회복됨'; case rec.RecoveryLabel.good: return '양호'; case rec.RecoveryLabel.caution: return '주의'; case rec.RecoveryLabel.needRest: return '휴식 필요'; default: return '분석 중'; }
   }
@@ -265,13 +253,12 @@ class _MirrorHealthSummaryPageState extends State<MirrorHealthSummaryPage> {
   ({String label, _Status status}) _analyzeHR(int val) { if (val < 50) return (label: '낮음', status: _Status.warn); if (val <= 90) return (label: '안정', status: _Status.good); return (label: '높음', status: _Status.bad); }
 }
 
-// UI Widgets (미러 디자인)
 enum _Status { good, warn, bad }
 Color _statusColor(_Status s) => switch (s) { _Status.good => Colors.green, _Status.warn => Colors.orange, _Status.bad => Colors.redAccent };
 
 class _SectionHeader extends StatelessWidget {
   final String text; const _SectionHeader(this.text, {super.key});
-  @override Widget build(BuildContext context) => Padding(padding: const EdgeInsets.only(bottom: 12, left: 4), child: Text(text, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)));
+  @override Widget build(BuildContext context) => Padding(padding: const EdgeInsets.only(bottom: 16, left: 4), child: Text(text, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)));
 }
 
 class _RecoveryCard extends StatelessWidget {
@@ -280,7 +267,35 @@ class _RecoveryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = _statusColor(status);
-    return InkWell(onTap: onTap, borderRadius: BorderRadius.circular(24), child: Container(padding: const EdgeInsets.all(24), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(24)), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(children: [Icon(Icons.bolt, color: color, size: 28), const SizedBox(width: 8), Text('회복 점수', style: TextStyle(fontSize: 18, color: Colors.black54, fontWeight: FontWeight.bold))]), const SizedBox(height: 8), Text(score != null ? '$score' : '-', style: const TextStyle(fontSize: 52, fontWeight: FontWeight.w800, color: Colors.black87, height: 1.0))]), Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(12)), child: Text(label, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)))])));
+    return InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(24),
+        child: Container(
+            padding: const EdgeInsets.all(28), // 패딩 확대
+            decoration: BoxDecoration(
+                color: Colors.grey[900], // ✅ 배경: 어두운 회색
+                borderRadius: BorderRadius.circular(24)
+            ),
+            child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [Icon(Icons.bolt, color: color, size: 32), const SizedBox(width: 12), Text('회복 점수', style: TextStyle(fontSize: 20, color: Colors.grey[400], fontWeight: FontWeight.bold))]), // ✅ 폰트 UP & 색상 조정
+                        const SizedBox(height: 12),
+                        Text(score != null ? '$score' : '-', style: const TextStyle(fontSize: 64, fontWeight: FontWeight.w900, color: Colors.white, height: 1.0)) // ✅ 폰트 UP
+                      ]
+                  ),
+                  Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                      decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(16)),
+                      child: Text(label, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: color)) // ✅ 폰트 UP
+                  )
+                ]
+            )
+        )
+    );
   }
 }
 
@@ -292,13 +307,28 @@ class _HealthGridCard extends StatelessWidget {
     final color = _statusColor(status);
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(20),
+      borderRadius: BorderRadius.circular(24),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        decoration: BoxDecoration(
+            color: Colors.grey[900], // ✅ 배경: 어두운 회색
+            borderRadius: BorderRadius.circular(24)
+        ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Row(children: [Icon(icon, size: 24, color: color), const SizedBox(width: 8), Flexible(child: Text(title, style: const TextStyle(fontSize: 16, color: Colors.black54, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis))]),
-          Flexible(child: FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.bottomLeft, child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [Text(value, style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: Colors.black87)), if (unit != null) ...[const SizedBox(width: 4), Text(unit!, style: TextStyle(fontSize: 14, color: Colors.grey[600], fontWeight: FontWeight.w600))]]), const SizedBox(height: 4), if (statusLabel != null) Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(6)), child: Text(statusLabel!, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: color))), if (progress != null) ...[const SizedBox(height: 6), SizedBox(width: 100, child: ClipRRect(borderRadius: BorderRadius.circular(4), child: LinearProgressIndicator(value: progress!.clamp(0.0, 1.0), backgroundColor: color.withOpacity(0.15), color: color, minHeight: 6)))]])))
+          Row(children: [
+            Icon(icon, size: 28, color: color),
+            const SizedBox(width: 10),
+            Flexible(child: Text(title, style: TextStyle(fontSize: 18, color: Colors.grey[400], fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)) // ✅ 폰트 UP & 색상 조정
+          ]),
+          Flexible(child: FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.bottomLeft, child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
+              Text(value, style: const TextStyle(fontSize: 36, fontWeight: FontWeight.w900, color: Colors.white)), // ✅ 폰트 UP & 흰색
+              if (unit != null) ...[const SizedBox(width: 6), Text(unit!, style: TextStyle(fontSize: 16, color: Colors.grey[500], fontWeight: FontWeight.w600))]
+            ]),
+            const SizedBox(height: 6),
+            if (statusLabel != null) Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(8)), child: Text(statusLabel!, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color))),
+            if (progress != null) ...[const SizedBox(height: 8), SizedBox(width: 120, child: ClipRRect(borderRadius: BorderRadius.circular(4), child: LinearProgressIndicator(value: progress!.clamp(0.0, 1.0), backgroundColor: color.withOpacity(0.15), color: color, minHeight: 8)))] // 바 두께 UP
+          ])))
         ]),
       ),
     );
@@ -311,11 +341,23 @@ class _HealthListCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = _statusColor(status);
-    return Padding(padding: const EdgeInsets.only(bottom: 12), child: InkWell(onTap: onTap, borderRadius: BorderRadius.circular(16), child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)), child: Row(children: [Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle), child: Icon(icon, size: 22, color: color)), const SizedBox(width: 16), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(fontSize: 14, color: Colors.grey, fontWeight: FontWeight.bold)), const SizedBox(height: 2), Text(subtitle, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black87))])), if (tagText != null) Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(8)), child: Text(tagText!, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)))]))));
+    return Padding(padding: const EdgeInsets.only(bottom: 16), child: InkWell(onTap: onTap, borderRadius: BorderRadius.circular(20), child: Container(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 22), decoration: BoxDecoration(
+        color: Colors.grey[900], // ✅ 배경: 어두운 회색
+        borderRadius: BorderRadius.circular(20)
+    ), child: Row(children: [
+      Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: color.withOpacity(0.1), shape: BoxShape.circle), child: Icon(icon, size: 26, color: color)),
+      const SizedBox(width: 20),
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title, style: TextStyle(fontSize: 16, color: Colors.grey[400], fontWeight: FontWeight.bold)), // ✅ 폰트 UP
+        const SizedBox(height: 4),
+        Text(subtitle, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: Colors.white)) // ✅ 폰트 UP & 흰색
+      ])),
+      if (tagText != null) Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(10)), child: Text(tagText!, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color)))
+    ]))));
   }
 }
 
 class _WipPage extends StatelessWidget {
   final String title; const _WipPage({required this.title, super.key});
-  @override Widget build(BuildContext context) => Scaffold(appBar: AppBar(title: Text(title)), body: const Center(child: Text('개발중', style: TextStyle(fontSize: 18))));
+  @override Widget build(BuildContext context) => Scaffold(backgroundColor: Colors.black, appBar: AppBar(title: Text(title, style: const TextStyle(color: Colors.white)), backgroundColor: Colors.black, iconTheme: const IconThemeData(color: Colors.white)), body: const Center(child: Text('개발중', style: TextStyle(fontSize: 20, color: Colors.white))));
 }
