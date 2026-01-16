@@ -34,7 +34,7 @@
     </queries>
 
     <application
-        android:label="finalhealthcheck"
+        android:label="H-Space"
         android:icon="@mipmap/ic_launcher"
         android:enableOnBackInvokedCallback="true"
         android:usesCleartextTraffic="true"> <meta-data android:name="flutterEmbedding" android:value="2" />
